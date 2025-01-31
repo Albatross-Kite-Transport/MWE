@@ -51,7 +51,7 @@ tethers = [
     Tether((1, 6), norm(points[1].position - points[6].position), stiffness, damping),
     Tether((2, 5), norm(points[2].position - points[5].position), stiffness, damping),
     Tether((3, 7), norm(points[3].position - points[7].position), stiffness, damping),
-    Tether((4, 9), norm(points[4].position - points[9].position), stiffness, damping),
+    Tether((4, 9), norm(points[4].position - points[9].position) - 0.5, stiffness, damping),
     
     Tether((5, 6), norm(points[5].position - points[6].position), stiffness, damping),
     Tether((5, 7), norm(points[5].position - points[7].position), stiffness, damping),
@@ -66,7 +66,7 @@ tethers = [
 
 pulleys = [
     Pulley((5, 6), (tethers[5].l0 + tethers[6].l0))
-    Pulley((8, 9), (tethers[5].l0 + tethers[6].l0))
+    Pulley((8, 9), (tethers[8].l0 + tethers[9].l0))
 ]
 
 """
@@ -99,7 +99,7 @@ l0 on pulley:
     damping = 473                                # unit damping constant            [Ns]
     segments::Int64 = 2                          # number of tether segments         [-]
     α0 = π/10                                    # initial tether angle            [rad]
-    duration = 2.0                                # duration of the simulation        [s]
+    duration = 20.0                                # duration of the simulation        [s]
     save::Bool = false                           # save png files in folder video
 end
 
@@ -199,26 +199,26 @@ function model(se)
             segment[:, tether_idx]       ~ pos[:, p2] - pos[:, p1]
             len[tether_idx]              ~ norm(segment[:, tether_idx])
             unit_vector[:, tether_idx]   ~ segment[:, tether_idx]/len[tether_idx]
-            rel_vel[:, tether_idx]       ~ vel[:, p2] - vel[:, p1]
+            rel_vel[:, tether_idx]       ~ vel[:, p1] - vel[:, p2]
             spring_vel[tether_idx]       ~ rel_vel[:, tether_idx] ⋅ unit_vector[:, tether_idx]
-            spring_force[tether_idx]     ~ (tether.stiffness * (len[tether_idx] - l0[tether_idx]) + tether.damping * spring_vel[tether_idx])
+            spring_force[tether_idx]     ~ (tether.stiffness * (len[tether_idx] - l0[tether_idx]) - tether.damping * spring_vel[tether_idx])
             spring_force_vec[:, tether_idx]  ~ spring_force[tether_idx] * unit_vector[:, tether_idx]
         ]
     end
 
-    for (i, point) in enumerate(points)
+    for (point_idx, point) in enumerate(points)
         if point.fixed
             eqs = [
                 eqs
-                force[:, i]  ~ zeros(3)
-                acc[:, i]    ~ zeros(3)
+                force[:, point_idx]  ~ zeros(3)
+                acc[:, point_idx]    ~ zeros(3)
             ]
         else
             # tether - inverted
             f::Vector{Num} = zeros(Num, 3)
             for (j, tether) in enumerate(tethers)
-                if i in tether.points
-                    inverted = tether.points[2] == i
+                if point_idx in tether.points
+                    inverted = tether.points[2] == point_idx
                     if inverted
                         f .-= spring_force_vec[:, j]
                     else
@@ -228,8 +228,8 @@ function model(se)
             end
             eqs = [
                 eqs
-                force[:, i]  ~ f - 10 * vel[:, i] + point.force
-                acc[:, i]    ~ force[:, i] / point.mass + se.g_earth
+                force[:, point_idx]  ~ f - 10 * vel[:, point_idx] + point.force
+                acc[:, point_idx]    ~ force[:, point_idx] / point.mass + se.g_earth
             ]
         end
     end
@@ -273,7 +273,7 @@ function play(se, sol, pos)
             ControlPlots.plt.savefig("video/"*"img-"*lpad(j, 4, "0"))
         end
         j += 1
-        wait_until(start + 0.5 * time * 1e9)
+        wait_until(start + 0.1 * 0.5 * time * 1e9)
     end
     if se.save
         println("Run the script ./bin/export_gif to create the gif file!")
