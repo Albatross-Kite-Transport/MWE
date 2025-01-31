@@ -7,7 +7,6 @@ using ControlPlots
 
 # Define user input structures (keep the same)
 struct Point
-    id::Int
     fixed::Bool
     position::Union{Vector{Float64}, Nothing}
     velocity::Union{Vector{Float64}, Nothing}
@@ -16,36 +15,33 @@ struct Point
 end
 
 struct Tether
-    id::Int
     points::Tuple{Int, Int}
-    length::Union{Float64, Nothing}  # Rest length for spring
+    l0::Union{Float64, Nothing}  # Rest length for spring
     stiffness::Float64  # New: spring stiffness
     damping::Float64    # New: damping coefficient
 end
 
 struct Pulley
-    id::Int
-    point::Int
     tethers::Tuple{Int, Int}
     sum_length::Float64
 end
 
 # Example user input
 points = [
-    Point(1, true, zeros(3), zeros(3), nothing, zeros(3)),  # Fixed point
-    Point(2, false, [0, 0, -1], zeros(3), 1.0, [0, 0, -9.81]),
-    Point(3, true, [-5.0, 0.0, -1.0], zeros(3), 1.0, zeros(3)),  # Fixed point
-    Point(4, false, [5.0, 0.0, -1.0], zeros(3), 1.1, [0., 0., -9.81]),  # Movable point
+    Point(true,  zeros(3), zeros(3), nothing, zeros(3)),  # Fixed point
+    Point(false, [0, 0, -1], zeros(3), 1.0, [0, 0, -9.81]), # Pulley
+    Point(true,  [-5.0, 0.0, -1.0], zeros(3), 1.0, [0., 0., -9.81]),  # Fixed point
+    Point(false, [5.0, 0.0, -1.0], zeros(3), 1.1, [0., 0., -9.81]),  # Movable point
 ]
 
 tethers = [
-    Tether(1, (1, 2), 5.0, 1000.0, 100.0),
-    Tether(2, (2, 3), 5.0, 1000.0, 100.0),
-    Tether(3, (2, 4), 5.0, 1000.0, 100.0),
+    Tether((1, 2), 1.0, 1000.0, 5.0),
+    Tether((2, 3), 5.0, 1000.0, 5.0),
+    Tether((2, 4), 5.0, 1000.0, 5.0),
 ]
 
 pulleys = [
-    Pulley(1, 2, (2, 3), 10.0)
+    Pulley((2, 3), 10.0)
 ]
 
 """
@@ -58,6 +54,9 @@ else:
 Force on point is:
     - sum of minus spring forces on tether-connected points
     - if tether-connected point is pulley: keep direction of pulley, but take minus spring force from the other point connected to the pulley
+
+l0 on pulley:
+    - stretched_length_1 / (stretched_length_1 + stretched_length_2) * sum_length
 """
 
 
@@ -75,7 +74,7 @@ Force on point is:
     damping = 473                                # unit damping constant            [Ns]
     segments::Int64 = 2                          # number of tether segments         [-]
     α0 = π/10                                    # initial tether angle            [rad]
-    duration = 10                                # duration of the simulation        [s]
+    duration = 20.0                                # duration of the simulation        [s]
     save::Bool = false                           # save png files in folder video
 end
 
@@ -85,112 +84,153 @@ function set_tether_diameter!(se, d; c_spring_4mm = 614600, damping_4mm = 473)
     se.damping = damping_4mm * (d/4.0)^2
 end
                               
-function calc_initial_state(se)
-    POS0 = zeros(3, se.segments+1)
-    VEL0 = zeros(3, se.segments+1)
-    for i in 1:se.segments+1
-        l0 = -(i-1)*se.l0/se.segments
-        v0 = -(i-1)*se.v_ro/se.segments
-        POS0[:, i] .= [sin(se.α0) * l0, 0, cos(se.α0) * l0]
-        VEL0[:, i] .= [sin(se.α0) * v0, 0, cos(se.α0) * v0]
+function calc_initial_state(points, tethers, pulleys)
+    POS0 = zeros(3, length(points))
+    VEL0 = zeros(3, length(points))
+    L0 = zeros(length(pulleys))
+    V0 = zeros(length(pulleys))
+    for i in eachindex(points)
+        POS0[:, i] .= points[i].position
+        VEL0[:, i] .= points[i].velocity
     end
-    POS0, VEL0
+    for i in eachindex(pulleys)
+        L0[i] = tethers[pulleys[i].tethers[1]].l0
+        V0[i] = 0.0
+    end
+    @show POS0, VEL0, L0, V0
+    POS0, VEL0, L0, V0
 end
 
 function model(se)
-    POS0, VEL0 = calc_initial_state(se)
-    mass_per_meter = se.rho_tether * π * (se.d_tether/2000.0)^2
     @parameters c_spring0=se.c_spring/(se.l0/se.segments) l_seg=se.l0/se.segments
     @parameters rel_compression_stiffness = se.rel_compression_stiffness
     @variables begin 
         pos(t)[1:3, eachindex(points)]
         vel(t)[1:3, eachindex(points)]
         acc(t)[1:3, eachindex(points)]
-        segment(t)[1:3, 1:se.segments]
-        unit_vector(t)[1:3, 1:se.segments]
+        force(t)[1:3, eachindex(points)]
+
+        pulley_force(t)[eachindex(pulleys)]
+        pulley_l0(t)[eachindex(pulleys)] # first tether length in pulley
+        pulley_vel(t)[eachindex(pulleys)]
+        pulley_acc(t)[eachindex(pulleys)]
+
+        segment(t)[1:3, eachindex(tethers)]
+        unit_vector(t)[1:3, eachindex(tethers)]
         l_spring(t), c_spring(t), damping(t), m_tether_particle(t)
-        len(t)[1:se.segments]
-        rel_vel(t)[1:3, 1:se.segments]
-        spring_vel(t)[1:se.segments]
-        c_spr(t)[1:se.segments]
-        spring_force(t)[1:3, 1:se.segments]
-        v_apparent(t)[1:3, 1:se.segments]
-        v_app_perp(t)[1:3, 1:se.segments]
-        norm_v_app(t)[1:se.segments]
-        half_drag_force(t)[1:3, 1:se.segments]
-        total_force(t)[1:3, eachindex(points)]
+        len(t)[eachindex(tethers)]
+        l0(t)[eachindex(tethers)]
+        rel_vel(t)[1:3, eachindex(tethers)]
+        spring_vel(t)[eachindex(tethers)]
+        spring_force(t)[eachindex(tethers)]
+        spring_force_vec(t)[1:3, eachindex(tethers)] # spring force from spring p1 to spring p2
     end
     # basic differential equations
-    eqs = vcat(D.(pos) .~ vel,
-                D.(vel) .~ acc)
-    eqs = vcat(eqs...)
-    # loop over all segments to calculate the spring and drag forces
-    for i in eachindex(points)
+    eqs = [
+        vec(D(pos)) ~ vec(vel)
+        vec(D(vel)) ~ vec(acc)
+        D(pulley_l0) ~ pulley_vel
+        D(pulley_vel) ~ pulley_acc
+    ]
+
+    for (pulley_idx, pulley) in enumerate(pulleys)
+        M = 3.1
         eqs = [
             eqs
-
+            pulley_force[pulley_idx]    ~ spring_force[pulley.tethers[1]] - spring_force[pulley.tethers[2]]
+            pulley_acc[pulley_idx]      ~ pulley_force[pulley_idx] / M
         ]
     end
-    for i in 1:se.segments
-        eqs = [segment[:, i]      ~ pos[:, i+1] - pos[:, i],
-               len[i]             ~ norm(segment[:, i]),
-               unit_vector[:, i]  ~ -segment[:, i]/len[i],
-               rel_vel[:, i]      ~ vel[:, i+1] - vel[:, i],
-               spring_vel[i]      ~ -unit_vector[:, i] ⋅ rel_vel[:, i],
-               c_spr[i]           ~ c_spring / (1+rel_compression_stiffness) 
-                                     * (rel_compression_stiffness+(len[i] > l_spring)),
-               spring_force[:, i] ~ (c_spr[i] * (len[i] - l_spring) 
-                                     + damping * spring_vel[i]) * unit_vector[:, i],
-               v_apparent[:, i]   ~ se.v_wind_tether .- (vel[:, i] + vel[:, i+1])/2,
-               v_app_perp[:, i]   ~ v_apparent[:, i] - (v_apparent[:, i] ⋅ unit_vector[:, i]) .* unit_vector[:, i],
-               norm_v_app[i]      ~ norm(v_app_perp[:, i]),
-               half_drag_force[:, i] ~ 0.25 * se.rho * se.cd_tether * norm_v_app[i] * (len[i]*se.d_tether/1000.0)
-                                        * v_app_perp[:, i]]
-        eqs = vcat(eqs, reduce(vcat, eqs))
-    end
-    # loop over all tether particles to apply the forces and calculate the accelerations
-    for i in 1:(se.segments+1)
-        eqs = []
-        if i == se.segments+1
-            push!(eqs, total_force[:, i] ~ spring_force[:, i-1] + half_drag_force[:, i-1])
-            push!(eqs, acc[:, i]         ~ se.g_earth + total_force[:, i] / (0.5 * m_tether_particle))
-        elseif i == 1
-            push!(eqs, total_force[:, i] ~ spring_force[:, i] + half_drag_force[:, i])
-            push!(eqs, acc[:, i]         ~ zeros(3))
-        else
-            push!(eqs, total_force[:, i] ~ spring_force[:, i-1] - spring_force[:, i] 
-                                           + half_drag_force[:, i-1] + half_drag_force[:, i])
-            push!(eqs, acc[:, i]         ~ se.g_earth + total_force[:, i] / m_tether_particle)
+
+    # loop over all tethers to calculate spring forces
+    for (tether_idx, tether) in enumerate(tethers)
+        found = false
+        for (pulley_idx, pulley) in enumerate(pulleys)
+            if tether_idx == pulley.tethers[1] # each tether should only be part of one pulley
+                eqs = [
+                    eqs
+                    l0[tether_idx] ~ pulley_l0[pulley_idx]
+                ]
+                found = true
+                break
+            elseif tether_idx == pulley.tethers[2]
+                eqs = [
+                    eqs
+                    l0[tether_idx] ~ pulley.sum_length - pulley_l0[pulley_idx]
+                ]
+                found = true
+                break
+            end
         end
-        eqs = vcat(eqs, reduce(vcat, eqs))
+        if !found
+            eqs = [
+                eqs
+                l0[tether_idx] ~ tether.l0
+            ]
+        end
+        p1, p2 = tether.points[1], tether.points[2]
+        eqs = [
+            eqs
+            segment[:, tether_idx]       ~ pos[:, p2] - pos[:, p1]
+            len[tether_idx]              ~ norm(segment[:, tether_idx])
+            unit_vector[:, tether_idx]   ~ segment[:, tether_idx]/len[tether_idx]
+            rel_vel[:, tether_idx]       ~ vel[:, p2] - vel[:, p1]
+            spring_vel[tether_idx]       ~ rel_vel[:, tether_idx] ⋅ unit_vector[:, tether_idx]
+            spring_force[tether_idx]     ~ (tether.stiffness * (len[tether_idx] - l0[tether_idx]) + tether.damping * spring_vel[tether_idx])
+            spring_force_vec[:, tether_idx]  ~ spring_force[tether_idx] * unit_vector[:, tether_idx]
+        ]
     end
-    # scalar equations
-    eqs = [l_spring          ~ (se.l0 + se.v_ro*t) / se.segments,
-           c_spring          ~ se.c_spring / l_spring,
-           m_tether_particle ~ mass_per_meter * l_spring,
-           damping           ~ se.damping  / l_spring]
-    eqs = vcat(eqs, reduce(vcat, eqs))  
-        
-    @named sys = ODESystem(reduce(vcat, Symbolics.scalarize.(eqs)), t)
-    simple_sys = structural_simplify(sys)
-    sys, simple_sys, pos, vel, l_spring, c_spr
+
+    for (i, point) in enumerate(points)
+        if point.fixed
+            eqs = [
+                eqs
+                force[:, i]  ~ zeros(3)
+                acc[:, i]    ~ zeros(3)
+            ]
+        else
+            # tether - inverted
+            f::Vector{Num} = zeros(Num, 3)
+            for (j, tether) in enumerate(tethers)
+                if i in tether.points
+                    inverted = tether.points[2] == i
+                    if inverted
+                        f .-= spring_force_vec[:, j]
+                    else
+                        f .+= spring_force_vec[:, j]
+                    end
+                end
+            end
+            eqs = [
+                eqs
+                force[:, i]  ~ f .- 1 * vel[:, i]
+                acc[:, i]    ~ force[:, i] / point.mass + se.g_earth
+            ]
+        end
+    end
+
+    eqs = reduce(vcat, Symbolics.scalarize.(eqs))
+    @named sys = ODESystem(eqs, t)
+    sys = structural_simplify(sys)
+    sys, pos, vel
 end
 
-function simulate(se, simple_sys)
-    dt = 0.02
+function simulate(se, sys)
+    dt = 0.1
     tol = 1e-6
     tspan = (0.0, se.duration)
     ts    = 0:dt:se.duration
-    prob = ODEProblem(simple_sys, nothing, tspan)
+    POS0, VEL0, L0, V0 = calc_initial_state(points, tethers, pulleys)
+    prob = ODEProblem(sys, [pos => POS0, vel => VEL0, sys.pulley_l0 => L0, sys.pulley_vel => V0], tspan)
     elapsed_time = @elapsed sol = solve(prob, FBDF(autodiff=true); dt, abstol=tol, reltol=tol, saveat=ts)
     elapsed_time = @elapsed sol = solve(prob, FBDF(autodiff=true); dt, abstol=tol, reltol=tol, saveat=ts)
     sol, elapsed_time
 end
 
 function play(se, sol, pos)
-    dt = 0.151
-    ylim = (-1.2 * (se.l0 + se.v_ro*se.duration), 0.5)
-    xlim = (-se.l0/2, se.l0/2)
+    dt = 0.1
+    ylim = (-10.5, 1.5)
+    xlim = (-6.0, 6.0)
     mkpath("video")
     z_max = 0.0
     # text position
@@ -203,7 +243,7 @@ function play(se, sol, pos)
         while sol.t[i] < time
             i += 1
         end
-        plot2d(sol[pos][i], time; segments=se.segments, xlim, ylim, xy)
+        plot2d(sol[pos][i], time; segments=length(tethers), xlim, ylim, xy)
         if se.save
             ControlPlots.plt.savefig("video/"*"img-"*lpad(j, 4, "0"))
         end
@@ -220,16 +260,16 @@ function main()
     global sol, pos, vel, len, c_spr
     se = Settings3()
     set_tether_diameter!(se, se.d_tether) # adapt spring and damping constants to tether diameter
-    sys, simple_sys, pos, vel, len, c_spr = model(se)
-    sol, elapsed_time = simulate(se, simple_sys)
+    sys, pos, vel = model(se)
+    sol, elapsed_time = simulate(se, sys)
     play(se, sol, pos)
     println("Elapsed time: $(elapsed_time) s, speed: $(round(se.duration/elapsed_time)) times real-time")
     println("Number of evaluations per step: ", round(sol.stats.nf/(se.duration/0.02), digits=1))
-    sol, pos, vel, sys, simple_sys
+    sol, pos, vel, sys
 end
 
 if (! @isdefined __BENCH__) || __BENCH__ == false
-    sol, pos, vel, sys, simple_sys = main()
+    sol, pos, vel, sys = main()
 end
 __BENCH__ = false
 nothing
