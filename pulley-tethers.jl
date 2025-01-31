@@ -26,22 +26,47 @@ struct Pulley
     sum_length::Float64
 end
 
-# Example user input
+# protune-speed-system.jpg
 points = [
-    Point(true,  zeros(3), zeros(3), nothing, zeros(3)),  # Fixed point
-    Point(false, [0, 0, -1], zeros(3), 1.0, [0, 0, -9.81]), # Pulley
-    Point(true,  [-5.0, 0.0, -1.0], zeros(3), 1.0, [0., 0., -9.81]),  # Fixed point
-    Point(false, [5.0, 0.0, -1.0], zeros(3), 1.1, [0., 0., -9.81]),  # Movable point
-]
+    Point(true,  [0, 0, 0],  zeros(3), nothing, zeros(3)),  # Fixed point
+    Point(true,  [1, 0, 0],  zeros(3), nothing, zeros(3)),  # Fixed point
+    Point(true,  [2, 0, 0],   zeros(3), nothing, zeros(3)),  # Fixed point
+    Point(true,  [5.5, 0, 0], zeros(3), nothing, zeros(3)),  # Fixed point
+   
+    Point(false, [1, 0, -1], zeros(3), 1.0, zeros(3)),
 
-tethers = [
-    Tether((1, 2), 1.0, 1000.0, 5.0),
-    Tether((2, 3), 5.0, 1000.0, 5.0),
-    Tether((2, 4), 5.0, 1000.0, 5.0),
+    Point(false, [0.5, 0, -2], zeros(3), 1.0, zeros(3)),
+    Point(false, [1.5, 0, -2], zeros(3), 1.0, zeros(3)),
+
+    Point(false, [1, 0, -3], zeros(3), 1.0, zeros(3)),
+    Point(false, [2, 0, -3], zeros(3), 1.0, zeros(3)),
+
+    Point(true,  [1, 0, -10], zeros(3), 1.0, [0., 0., -10]),  # Fixed point
+    Point(false, [2, 0, -10], zeros(3), 1.0, [0., 0., -10]),  # Movable point
 ]
+@show norm(points[1].position - points[6].position)
+stiffness = 614600
+damping = 4730
+tethers = [
+    Tether((1, 6), norm(points[1].position - points[6].position), stiffness, damping),
+    Tether((2, 5), norm(points[2].position - points[5].position), stiffness, damping),
+    Tether((3, 7), norm(points[3].position - points[7].position), stiffness, damping),
+    Tether((4, 9), norm(points[4].position - points[9].position), stiffness, damping),
+    
+    Tether((5, 6), norm(points[5].position - points[6].position), stiffness, damping),
+    Tether((5, 7), norm(points[5].position - points[7].position), stiffness, damping),
+    
+    Tether((6, 8), norm(points[6].position - points[8].position), stiffness, damping),
+    Tether((7, 8), norm(points[7].position - points[8].position), stiffness, damping),
+    Tether((7, 9), norm(points[7].position - points[9].position), stiffness, damping),
+    
+    Tether((8, 10), norm(points[8].position - points[10].position), stiffness, damping),
+    Tether((9, 11), norm(points[9].position - points[11].position), stiffness, damping),
+    ]
 
 pulleys = [
-    Pulley((2, 3), 10.0)
+    Pulley((5, 6), (tethers[5].l0 + tethers[6].l0))
+    Pulley((8, 9), (tethers[5].l0 + tethers[6].l0))
 ]
 
 """
@@ -74,7 +99,7 @@ l0 on pulley:
     damping = 473                                # unit damping constant            [Ns]
     segments::Int64 = 2                          # number of tether segments         [-]
     α0 = π/10                                    # initial tether angle            [rad]
-    duration = 20.0                                # duration of the simulation        [s]
+    duration = 2.0                                # duration of the simulation        [s]
     save::Bool = false                           # save png files in folder video
 end
 
@@ -203,7 +228,7 @@ function model(se)
             end
             eqs = [
                 eqs
-                force[:, i]  ~ f .- 1 * vel[:, i]
+                force[:, i]  ~ f - 10 * vel[:, i] + point.force
                 acc[:, i]    ~ force[:, i] / point.mass + se.g_earth
             ]
         end
@@ -243,7 +268,7 @@ function play(se, sol, pos)
         while sol.t[i] < time
             i += 1
         end
-        plot2d(sol[pos][i], time; segments=length(tethers), xlim, ylim, xy)
+        plot2d(sol[pos][i], time; segments=length(points)-1, xlim, ylim, xy)
         if se.save
             ControlPlots.plt.savefig("video/"*"img-"*lpad(j, 4, "0"))
         end
