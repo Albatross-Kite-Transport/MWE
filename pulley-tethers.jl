@@ -5,7 +5,6 @@ using ModelingToolkit: t_nounits as t, D_nounits as D
 using ControlPlots
 
 
-# Define user input structures (keep the same)
 struct Point
     fixed::Bool
     position::Union{Vector{Float64}, Nothing}
@@ -16,9 +15,9 @@ end
 
 struct Tether
     points::Tuple{Int, Int}
-    l0::Union{Float64, Nothing}  # Rest length for spring
-    stiffness::Float64  # New: spring stiffness
-    damping::Float64    # New: damping coefficient
+    l0::Union{Float64, Nothing}
+    stiffness::Float64
+    damping::Float64
 end
 
 struct Pulley
@@ -28,10 +27,10 @@ end
 
 # protune-speed-system.jpg
 points = [
-    Point(true,  [0, 0, 0],  zeros(3), nothing, zeros(3)),  # Fixed point
-    Point(true,  [1, 0, 0],  zeros(3), nothing, zeros(3)),  # Fixed point
-    Point(true,  [2, 0, 0],   zeros(3), nothing, zeros(3)),  # Fixed point
-    Point(true,  [5.5, 0, 0], zeros(3), nothing, zeros(3)),  # Fixed point
+    Point(true,  [0, 0, 2],  zeros(3), nothing, zeros(3)),  # Fixed point
+    Point(true,  [1, 0, 2],  zeros(3), nothing, zeros(3)),  # Fixed point
+    Point(true,  [2, 0, 2],   zeros(3), nothing, zeros(3)),  # Fixed point
+    Point(true,  [5.5, 0, 2], zeros(3), nothing, zeros(3)),  # Fixed point
    
     Point(false, [1, 0, -1], zeros(3), 1.0, zeros(3)),
 
@@ -41,10 +40,10 @@ points = [
     Point(false, [1, 0, -3], zeros(3), 1.0, zeros(3)),
     Point(false, [2, 0, -3], zeros(3), 1.0, zeros(3)),
 
-    Point(true,  [1, 0, -10], zeros(3), 1.0, [0., 0., -10]),  # Fixed point
-    Point(false, [2, 0, -10], zeros(3), 1.0, [0., 0., -10]),  # Movable point
+    Point(false,  [1, 0, -10], zeros(3), 1.0, [0., 0., -50]),
+    Point(false, [2, 0, -10], zeros(3), 1.0, [0., 0., -50]),
 ]
-@show norm(points[1].position - points[6].position)
+
 stiffness = 614600
 damping = 4730
 tethers = [
@@ -62,7 +61,7 @@ tethers = [
     
     Tether((8, 10), norm(points[8].position - points[10].position), stiffness, damping),
     Tether((9, 11), norm(points[9].position - points[11].position), stiffness, damping),
-    ]
+]
 
 pulleys = [
     Pulley((5, 6), (tethers[5].l0 + tethers[6].l0))
@@ -155,7 +154,7 @@ function model(se)
         vec(D(pos)) ~ vec(vel)
         vec(D(vel)) ~ vec(acc)
         D(pulley_l0) ~ pulley_vel
-        D(pulley_vel) ~ pulley_acc
+        D(pulley_vel) ~ pulley_acc - 10pulley_vel
     ]
 
     for (pulley_idx, pulley) in enumerate(pulleys)
@@ -201,7 +200,7 @@ function model(se)
             unit_vector[:, tether_idx]   ~ segment[:, tether_idx]/len[tether_idx]
             rel_vel[:, tether_idx]       ~ vel[:, p1] - vel[:, p2]
             spring_vel[tether_idx]       ~ rel_vel[:, tether_idx] ⋅ unit_vector[:, tether_idx]
-            spring_force[tether_idx]     ~ (tether.stiffness * (len[tether_idx] - l0[tether_idx]) - tether.damping * spring_vel[tether_idx])
+            spring_force[tether_idx]     ~ (tether.stiffness * tether.l0 * (len[tether_idx] - l0[tether_idx]) - tether.damping * tether.l0 * spring_vel[tether_idx])
             spring_force_vec[:, tether_idx]  ~ spring_force[tether_idx] * unit_vector[:, tether_idx]
         ]
     end
@@ -226,9 +225,10 @@ function model(se)
                     end
                 end
             end
+            @show point.force
             eqs = [
                 eqs
-                force[:, point_idx]  ~ f - 10 * vel[:, point_idx] + point.force
+                force[:, point_idx]  ~ f + point.force
                 acc[:, point_idx]    ~ force[:, point_idx] / point.mass + se.g_earth
             ]
         end
@@ -254,7 +254,7 @@ end
 
 function play(se, sol, pos)
     dt = 0.1
-    ylim = (-10.5, 1.5)
+    ylim = (-10.5, 2.5)
     xlim = (-6.0, 6.0)
     mkpath("video")
     z_max = 0.0
@@ -290,6 +290,8 @@ function main()
     play(se, sol, pos)
     println("Elapsed time: $(elapsed_time) s, speed: $(round(se.duration/elapsed_time)) times real-time")
     println("Number of evaluations per step: ", round(sol.stats.nf/(se.duration/0.02), digits=1))
+    println("8 pos: ", sol[pos[:, 8]][end])
+    println("9 pos: ", sol[pos[:, 9]][end])
     sol, pos, vel, sys
 end
 
