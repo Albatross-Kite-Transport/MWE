@@ -104,12 +104,8 @@ function create_interpolations(vertices, box_center_z, radius, gamma_tip)
         areas[j] = last_area + area
     end
 
-    println("interp 1")
     itp_max = linear_interpolation(gamma_range, max_xs)
-    println("interp 2")
     itp_min = linear_interpolation(gamma_range, min_xs)
-    println("interp 3")
-    println(areas)
     itp_area = linear_interpolation(gamma_range, areas)
     
     return (itp_max, itp_min, itp_area, gamma_range, max_xs, min_xs)
