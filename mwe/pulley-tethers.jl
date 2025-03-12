@@ -6,7 +6,7 @@ using ControlPlots
 
 
 struct Point
-    fixed::Bool
+    type::Symbol
     position::Union{Vector{Float64}, Nothing}
     velocity::Union{Vector{Float64}, Nothing}
     mass::Union{Float64, Nothing}
@@ -27,21 +27,21 @@ end
 
 # protune-speed-system.jpg
 points = [
-    Point(true,  [0, 0, 2],  zeros(3), nothing, zeros(3)),  # Fixed point
-    Point(true,  [1, 0, 2],  zeros(3), nothing, zeros(3)),  # Fixed point
-    Point(true,  [2, 0, 2],   zeros(3), nothing, zeros(3)),  # Fixed point
-    Point(true,  [5.5, 0, 2], zeros(3), nothing, zeros(3)),  # Fixed point
+    Point(:fixed,  [0, 0, 2],  zeros(3), nothing, zeros(3)),  # Fixed point
+    Point(:fixed,  [1, 0, 2],  zeros(3), nothing, zeros(3)),  # Fixed point
+    Point(:fixed,  [2, 0, 2],   zeros(3), nothing, zeros(3)),  # Fixed point
+    Point(:fixed,  [5.5, 0, 2], zeros(3), nothing, zeros(3)),  # Fixed point
    
-    Point(false, [1, 0, -1], zeros(3), 1.0, zeros(3)),
+    Point(:quasi_static, [1, 0, -1], zeros(3), 1.0, zeros(3)),
 
-    Point(false, [0.5, 0, -2], zeros(3), 1.0, zeros(3)),
-    Point(false, [1.5, 0, -2], zeros(3), 1.0, zeros(3)),
+    Point(:quasi_static, [0.5, 0, -2], zeros(3), 1.0, zeros(3)),
+    Point(:quasi_static, [1.5, 0, -2], zeros(3), 1.0, zeros(3)),
 
-    Point(false, [1, 0, -3], zeros(3), 1.0, zeros(3)),
-    Point(false, [2, 0, -3], zeros(3), 1.0, zeros(3)),
+    Point(:quasi_static, [1, 0, -3], zeros(3), 1.0, zeros(3)),
+    Point(:quasi_static, [2, 0, -3], zeros(3), 1.0, zeros(3)),
 
-    Point(false,  [1, 0, -10], zeros(3), 1.0, [0., 0., -50]),
-    Point(false, [2, 0, -10], zeros(3), 1.0, [0., 0., -50]),
+    Point(:dynamic,  [1, 0, -10], zeros(3), 1.0, [0., 0., -50]),
+    Point(:dynamic, [2, 0, -10], zeros(3), 1.0, [0., 0., -50]),
 ]
 
 stiffness = 614600
@@ -206,7 +206,7 @@ function model(se)
     end
 
     for (point_idx, point) in enumerate(points)
-        if point.fixed
+        if point.type === :fixed
             eqs = [
                 eqs
                 force[:, point_idx]  ~ zeros(3)
@@ -225,7 +225,6 @@ function model(se)
                     end
                 end
             end
-            @show point.force
             eqs = [
                 eqs
                 force[:, point_idx]  ~ f + point.force
@@ -268,7 +267,9 @@ function play(se, sol, pos)
         while sol.t[i] < time
             i += 1
         end
-        plot2d(sol[pos][i], time; segments=length(points)-1, xlim, ylim, xy)
+        segs = [[tethers[k].points[1], tethers[k].points[2]] for k in eachindex(tethers)]
+        pos_ = [sol[pos][i][:, k] for k in eachindex(sol[pos][i][1, :])]
+        plot2d(pos_, segs, time; xlim, ylim, xy)
         if se.save
             ControlPlots.plt.savefig("video/"*"img-"*lpad(j, 4, "0"))
         end
