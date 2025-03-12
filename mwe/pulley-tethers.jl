@@ -239,16 +239,16 @@ function model(se)
         if point.type === :fixed
             eqs = [
                 eqs
-                # pos[:, point_idx] ~ point.position
-                # vel[:, point_idx] ~ zeros(3)
-                D(pos[:, point_idx]) ~ vel[:, point_idx]
-                D(vel[:, point_idx]) ~ acc[:, point_idx]
+                pos[:, point_idx] ~ point.position
+                vel[:, point_idx] ~ zeros(3)
+                # D(pos[:, point_idx]) ~ vel[:, point_idx]
+                # D(vel[:, point_idx]) ~ acc[:, point_idx]
             ]
-            defaults = [
-                defaults
-                [pos[j, point_idx] => POS0[j, point_idx] for j in 1:3]
-                [vel[j, point_idx] => 0 for j in 1:3]
-            ]
+            # defaults = [
+            #     defaults
+            #     [pos[j, point_idx] => POS0[j, point_idx] for j in 1:3]
+            #     [vel[j, point_idx] => 0 for j in 1:3]
+            # ]
         elseif point.type === :dynamic || point.type === :quasi_static
             eqs = [
                 eqs
