@@ -193,11 +193,12 @@ function calc_acc(se::Settings3, pos::AbstractMatrix{T}, pulley_l0) where T
             acc[:, point_idx] .= force ./ point.mass .+ se.g_earth
         end
     end
-    return [acc, pulley_acc]
+    return acc, pulley_acc
 end
 @register_symbolic calc_acc(se::Settings3, pos, pulley_l0)
 
-function calc_pos()
+function calc_pos(se::Settings3, pos, pulley_l0)
+
 end
 
 function model(se)
@@ -224,32 +225,70 @@ function model(se)
         spring_force(t)[eachindex(tethers)]
         spring_force_vec(t)[1:3, eachindex(tethers)] # spring force from spring p1 to spring p2
     end
-    # basic differential equations
+
+    POS0, VEL0, L0, V0 = calc_initial_state(points, tethers, pulleys)
+    defaults = Pair{Num, Real}[]
     eqs = [
-        vec(D(pos)) ~ vec(vel)
-        vec(D(vel)) ~ vec(acc)
+        # vec(D(pos)) ~ vec(vel)
+        # vec(D(vel)) ~ vec(acc)
         D(pulley_l0) ~ pulley_vel
         D(pulley_vel) ~ pulley_acc - 10pulley_vel
     ]
 
+    for (point_idx, point) in enumerate(points)
+        if point.type === :fixed
+            eqs = [
+                eqs
+                # pos[:, point_idx] ~ point.position
+                # vel[:, point_idx] ~ zeros(3)
+                D(pos[:, point_idx]) ~ vel[:, point_idx]
+                D(vel[:, point_idx]) ~ acc[:, point_idx]
+            ]
+            defaults = [
+                defaults
+                [pos[j, point_idx] => POS0[j, point_idx] for j in 1:3]
+                [vel[j, point_idx] => 0 for j in 1:3]
+            ]
+        elseif point.type === :dynamic || point.type === :quasi_static
+            eqs = [
+                eqs
+                D(pos[:, point_idx]) ~ vel[:, point_idx]
+                D(vel[:, point_idx]) ~ acc[:, point_idx]
+            ]
+            defaults = [
+                defaults
+                [pos[j, point_idx] => POS0[j, point_idx] for j in 1:3]
+                [vel[j, point_idx] => 0 for j in 1:3]
+            ]
+        else
+            println("wrong type")
+        end
+    end
+
+    defaults = [
+        defaults
+        pulley_l0 => L0
+        pulley_vel => V0
+    ]
+
     eqs = [
         eqs
-        vec([acc, pulley_acc]) ~ vec(calc_acc(se, pos, pulley_l0))
+        vec(acc) ~ vec(calc_acc(se, pos, pulley_l0)[1])
+        vec(pulley_acc) ~ vec(calc_acc(se, pos, pulley_l0)[2])
     ]
     
     eqs = reduce(vcat, Symbolics.scalarize.(eqs))
     @named sys = ODESystem(eqs, t)
     @time sys = structural_simplify(sys; simplify=false)
-    sys, pos, vel
+    sys, pos, vel, defaults
 end
 
-function simulate(se, sys)
+function simulate(se, sys, defaults)
     dt = 0.1
     tol = 1e-6
     tspan = (0.0, se.duration)
     ts    = 0:dt:se.duration
-    POS0, VEL0, L0, V0 = calc_initial_state(points, tethers, pulleys)
-    @time prob = ODEProblem(sys, [pos => POS0, vel => VEL0, sys.pulley_l0 => L0, sys.pulley_vel => V0], tspan; simplify=false)
+    @time prob = ODEProblem(sys, defaults, tspan; simplify=false)
     elapsed_time = @elapsed sol = solve(prob, FBDF(autodiff=true); dt, abstol=tol, reltol=tol, saveat=ts)
     elapsed_time = @elapsed sol = solve(prob, FBDF(autodiff=true); dt, abstol=tol, reltol=tol, saveat=ts)
     sol, elapsed_time
@@ -285,8 +324,8 @@ function main()
     global sol, pos, vel, len, c_spr
     se = Settings3()
     set_tether_diameter!(se, se.d_tether) # adapt spring and damping constants to tether diameter
-    sys, pos, vel = model(se)
-    sol, elapsed_time = simulate(se, sys)
+    sys, pos, vel, defaults = model(se)
+    sol, elapsed_time = simulate(se, sys, defaults)
     play(se, sol, pos)
     println("Elapsed time: $(elapsed_time) s, speed: $(round(se.duration/elapsed_time)) times real-time")
     println("Number of evaluations per step: ", round(sol.stats.nf/(se.duration/0.1), digits=1))
