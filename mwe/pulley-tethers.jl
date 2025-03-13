@@ -1,7 +1,7 @@
 # Tutorial example simulating a 3D mass-spring system with a nonlinear spring (1% stiffness
 # for l < l_0), n tether segments, tether drag and reel-in and reel-out. 
 using ModelingToolkit, OrdinaryDiffEq, LinearAlgebra, Timers, Parameters, ControlPlots
-using ModelingToolkit: t_nounits as t, D_nounits as D
+using ModelingToolkit: t_nounits as t, D_nounits as D, setp, parameter_index
 using NonlinearSolve
 using ControlPlots
 
@@ -103,17 +103,6 @@ l0 on pulley:
     save::Bool = false                           # save png files in folder video
 end
 
-@with_kw struct Buffer{T}
-    spring_force::Vector{T} = zeros(T, length(tethers))
-    spring_force_vec::Matrix{T} = zeros(T, 3, length(tethers))
-    segment::Vector{T} = zeros(T, 3)
-    unit_vector::Vector{T} = zeros(T, 3)
-    rel_vel::Vector{T} = zeros(T, 3)
-    pulley_acc::Vector{T} = zeros(T, length(pulleys))
-    acc::Matrix{T} = zeros(T, 3, length(points))
-    force::Vector{T} = zeros(T, 3)
-end
-
 function set_tether_diameter!(se, d; c_spring_4mm = 614600, damping_4mm = 473)
     se.d_tether = d
     se.c_spring = c_spring_4mm * (d/4.0)^2
@@ -136,8 +125,10 @@ function calc_initial_state(points, tethers, pulleys)
     POS0, VEL0, L0, V0
 end
 
-function calc_spring_forces!(b::Buffer, pos::AbstractMatrix{T}, vel::AbstractMatrix{T}, pulley_l0) where T
+function calc_spring_forces(pos::AbstractMatrix{T}, vel::AbstractMatrix{T}, pulley_l0) where T
     # loop over all tethers to calculate spring forces
+    spring_force = zeros(T, length(tethers))
+    spring_force_vec = zeros(T, 3, length(tethers))
     for (tether_idx, tether) in enumerate(tethers)
         found = false
         for (pulley_idx, pulley) in enumerate(pulleys)
@@ -156,46 +147,48 @@ function calc_spring_forces!(b::Buffer, pos::AbstractMatrix{T}, vel::AbstractMat
         end
         p1, p2 = tether.points[1], tether.points[2]
 
-        b.segment         .= pos[:, p2] .- pos[:, p1]
-        len                = norm(b.segment)
-        b.unit_vector     .= b.segment ./ len
-        b.rel_vel         .= vel[:, p1] .- vel[:, p2]
-        spring_vel         = b.rel_vel ⋅ b.unit_vector
-        b.spring_force[tether_idx]          = (tether.stiffness * tether.l0 * (len - l0) - tether.damping * tether.l0 * spring_vel)
-        b.spring_force_vec[:, tether_idx]  .= b.spring_force[tether_idx] .* b.unit_vector
+        segment            = pos[:, p2] .- pos[:, p1]
+        len                = norm(segment)
+        unit_vector        = segment ./ len
+        rel_vel            = vel[:, p1] .- vel[:, p2]
+        spring_vel         = rel_vel ⋅ unit_vector
+        spring_force[tether_idx]          = (tether.stiffness * tether.l0 * (len - l0) - tether.damping * tether.l0 * spring_vel)
+        spring_force_vec[:, tether_idx]  .= spring_force[tether_idx] .* unit_vector
     end
-    return b.spring_force_vec, b.spring_force
+    return spring_force_vec, spring_force
 end
 
-function calc_acc!(b::Buffer, se::Settings3, pos::AbstractMatrix{T}, vel::AbstractMatrix{T}, pulley_l0) where T
-    calc_spring_forces!(b, pos, vel, pulley_l0)
+function calc_acc(se::Settings3, pos::AbstractMatrix{T}, vel::AbstractMatrix{T}, pulley_l0) where T
+    spring_force_vec, spring_force = calc_spring_forces(pos, vel, pulley_l0)
+    acc = zeros(T, 3, length(points))
+    pulley_acc = zeros(T, length(pulleys))
 
     for (pulley_idx, pulley) in enumerate(pulleys)
         M = 3.1
-        pulley_force = b.spring_force[pulley.tethers[1]] - b.spring_force[pulley.tethers[2]]
-        b.pulley_acc[pulley_idx] = pulley_force / M
+        pulley_force = spring_force[pulley.tethers[1]] - spring_force[pulley.tethers[2]]
+        pulley_acc[pulley_idx] = pulley_force / M
     end
 
     for (point_idx, point) in enumerate(points)
         if point.type === :fixed
-            b.acc[:, point_idx] .= 0.0
+            acc[:, point_idx] .= 0.0
         else
-            b.force .= 0.0
+            force = zeros(T, 3)
             for (j, tether) in enumerate(tethers)
                 if point_idx in tether.points
                     inverted = tether.points[2] == point_idx
                     if inverted
-                        b.force .-= b.spring_force_vec[:, j]
+                        force .-= spring_force_vec[:, j]
                     else
-                        b.force .+= b.spring_force_vec[:, j]
+                        force .+= spring_force_vec[:, j]
                     end
                 end
             end
-            b.force .+= point.force
-            b.acc[:, point_idx] .= b.force ./ point.mass .+ se.g_earth
+            force .+= point.force
+            acc[:, point_idx] .= force ./ point.mass .+ se.g_earth
         end
     end
-    return b.acc, b.pulley_acc
+    return acc, pulley_acc
 end
 
 # function calc_pos(b::Buffer, se::Settings3, idxs, pos_::AbstractMatrix{T}, vel_, pulley_l0) where T
@@ -204,7 +197,7 @@ end
 #     function f(u, p)
 #         pos[:, idxs] .= u
 #         calc_acc!(b, se, pos, vel, pulley_l0)
-#         return b.acc[:, idxs]
+#         return acc[:, idxs]
 #     end
 #     u0 = pos[:, idxs]
 #     prob = NonlinearProblem(f, u0, nothing)
@@ -224,7 +217,6 @@ end
 # end
 
 function calc_pos()
-    b = Buffer{Num}()
     se = Settings3()
     s_idxs = [5, 6]
     d_idxs = setdiff(eachindex(points), s_idxs)
@@ -257,14 +249,14 @@ function calc_pos()
         eqs = [
             eqs
             static_acc[:, j] ~ zeros(3)
-            static_acc[:, j] ~ calc_acc!(b, se, pos, vel, pulley_l0)[1][:, i] # WRONG POS HERE
+            static_acc[:, j] ~ calc_acc(se, pos, vel, pulley_l0)[1][:, i]
         ]
     end
     eqs = reduce(vcat, Symbolics.scalarize.(eqs))
-    @mtkbuild ns = NonlinearSystem(eqs)
+    @mtkbuild ns = NonlinearSystem(eqs, [static_pos, static_acc], [dynamic_pos, vel, pulley_l0])
     u0 = [
         static_pos => POS0[:, s_idxs]
-        static_acc => VEL0[:, s_idxs]
+        # static_acc => VEL0[:, s_idxs]
     ]
     ps = [
         dynamic_pos => POS0[:, d_idxs]
@@ -272,11 +264,20 @@ function calc_pos()
         pulley_l0 => L0
     ]
     prob = NonlinearProblem(ns, u0, ps)
-    @time sol = solve(prob, NewtonRaphson(); abstol=1e-5, reltol=1e-5)
-    @time sol = solve(prob, NewtonRaphson(); abstol=1e-5, reltol=1e-5)
-    return sol
+    @time sol = solve(prob, NewtonRaphson(autodiff=AutoFiniteDiff()); abstol=1e-5, reltol=1e-5)
+    @time sol = solve(prob, NewtonRaphson(autodiff=AutoFiniteDiff()); abstol=1e-5, reltol=1e-5)
+    
+    set_dynamic_pos = setp(prob, dynamic_pos)
+    # set_dynamic_pos = setp(prob, dynamic_pos)
+    # @show vec(POS0[:, d_idxs])
+    @time set_dynamic_pos(prob, POS0[:, d_idxs])
+    @time set_dynamic_pos(prob, POS0[:, d_idxs])
+    @time sol = solve(prob, NewtonRaphson(autodiff=AutoFiniteDiff()); abstol=1e-5, reltol=1e-5)
+    @time sol = solve(prob, NewtonRaphson(autodiff=AutoFiniteDiff()); abstol=1e-5, reltol=1e-5)
+
+    return sol, static_pos
 end
-sol = calc_pos()
+sol, pos = calc_pos()
 @assert false
 
 function model(b::Buffer, se::Settings3)
