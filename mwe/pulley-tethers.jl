@@ -82,7 +82,7 @@ pulleys = [
     damping = 473                                # unit damping constant            [Ns]
     segments::Int64 = 2                          # number of tether segments         [-]
     α0 = π/10                                    # initial tether angle            [rad]
-    duration = 0.2                                # duration of the simulation        [s]
+    duration = 5.0                                # duration of the simulation        [s]
     save::Bool = false                           # save png files in folder video
 end
 
@@ -222,24 +222,20 @@ function create_pos_prob(se::Settings3, s_idxs, d_idxs)
         vel => VEL0
         pulley_l0 => L0
     ]
-    prob = NonlinearProblem(ns, u0, ps)
+    prob = NonlinearProblem(ns, u0, ps; verbose=false)
     getter = getu(prob, static_pos)
-    setter = setp(prob, [dynamic_pos, vel, pulley_l0])
-    return prob, getter, setter
+    setter = setp(prob, [vel, pulley_l0])
+    return prob, getter, setter, s_idxs
 end
 
-function calc_pos(p, pos_, vel, pulley_l0)
-    pos = copy(pos)
-    prob, getter, setter, s_idxs, d_idxs = p
-    setter(prob, [pos[:, d_idxs], vel, pulley_l0])
-    sol = solve(prob, NewtonRaphson(autodiff=AutoFiniteDiff()); abstol=1e-5, reltol=1e-5, verbose=false)
-    pos[:, s_idxs] .= getter(sol)
-    return pos
+function calc_pos(ps, vel, pulley_l0)
+    prob, getter, setter, s_idxs = ps
+    setter(prob, [vel, pulley_l0])
+    sol = solve(prob, NewtonRaphson(autodiff=AutoFiniteDiff(), verbose=false); abstol=1e-5, reltol=1e-5, verbose=false)
+    return getter(sol)
 end
-
-@register_array_symbolic calc_pos(p::Tuple, 
-        pos::AbstractMatrix, vel::AbstractMatrix, pulley_l0::AbstractVector) begin
-    size = size(pos)
+@register_array_symbolic calc_pos(ps::Tuple, vel::AbstractMatrix, pulley_l0::AbstractVector) begin
+    size = (3, length(ps[4]))
     eltype = Float64
 end
 
@@ -271,9 +267,8 @@ function model(se::Settings3)
     POS0, VEL0, L0, V0 = calc_initial_state(points, tethers, pulleys)
 
     defaults = Pair{Num, Real}[]
+    guesses = Pair{Num, Real}[]
     eqs = [
-        # vec(D(pos)) ~ vec(vel)
-        # vec(D(vel)) ~ vec(acc)
         D(pulley_l0) ~ pulley_vel
         D(pulley_vel) ~ pulley_acc - 10pulley_vel
     ]
@@ -299,8 +294,8 @@ function model(se::Settings3)
             ]
         elseif point.type === :quasi_static
             push!(s_idxs, point_idx)
-            defaults = [
-                defaults
+            guesses = [
+                guesses
                 [pos[j, point_idx] => POS0[j, point_idx] for j in 1:3]
                 [vel[j, point_idx] => 0 for j in 1:3]
             ]
@@ -310,12 +305,12 @@ function model(se::Settings3)
     end
 
     d_idxs = setdiff(eachindex(points), s_idxs)
-    pos_prob, getter, setter = create_pos_prob(se, s_idxs, d_idxs)
-    for i in s_idxs
+    ps = create_pos_prob(se, s_idxs, d_idxs)
+    for (j, i) in enumerate(s_idxs)
         eqs = [
             eqs
-            # pos[:, i] ~ calc_pos((pos_prob, getter, setter, s_idxs, d_idxs), pos, vel, pulley_l0)[:, i]
-            pos[:, i] ~ zeros(3)
+            acc[:, i] ~ zeros(3)
+            # pos[:, i] ~ calc_pos(ps, vel, pulley_l0)[:, j]
             vel[:, i] ~ zeros(3)
         ]
     end
@@ -326,34 +321,25 @@ function model(se::Settings3)
         pulley_vel => V0
     ]
 
-
-    for i in eachindex(points)
-        eqs = [
-            eqs
-            # acc[:, i] ~ calc_acc(se, pos, vel, pulley_l0)[1][:, i]
-            acc[:, i] ~ zeros(3)
-        ]
-    end
-    @show size(calc_acc(se, pos, vel, pulley_l0)[2])
     eqs = [
         eqs
-        pulley_acc ~ calc_acc(se, pos, vel, pulley_l0)[2]
-        # vec(acc) ~ vec(calc_acc(se, pos, vel, pulley_l0)[1])
-        # vec(pulley_acc) ~ vec(calc_acc(se, pos, vel, pulley_l0)[2])
+        vec(acc) .~ vec(calc_acc(se, pos, vel, pulley_l0)[1])
+        vec(pulley_acc) .~ vec(calc_acc(se, pos, vel, pulley_l0)[2])
     ]
     
     eqs = reduce(vcat, Symbolics.scalarize.(eqs))
     @named sys = ODESystem(eqs, t)
+    println("struct simplify")
     @time sys = structural_simplify(sys; simplify=false)
-    sys, pos, vel, defaults
+    sys, pos, vel, defaults, guesses
 end
 
-function simulate(se, sys, defaults)
+function simulate(se, sys, defaults, guesses)
     dt = 0.1
     tol = 1e-6
     tspan = (0.0, se.duration)
     ts    = 0:dt:se.duration
-    @time prob = ODEProblem(sys, defaults, tspan; simplify=false)
+    @time prob = ODEProblem(sys, defaults, tspan; guesses, simplify=false)
     elapsed_time = @elapsed sol = solve(prob, FBDF(autodiff=AutoFiniteDiff(absstep=1e-5, relstep=1e-5)); dt, abstol=tol, reltol=tol, saveat=ts)
     elapsed_time = @elapsed sol = solve(prob, FBDF(autodiff=AutoFiniteDiff(absstep=1e-5, relstep=1e-5)); dt, abstol=tol, reltol=tol, saveat=ts)
     sol, elapsed_time
@@ -386,11 +372,10 @@ function play(se, sol, pos)
 end
 
 function main()
-    global sol, pos, vel, len, c_spr
     se = Settings3()
     set_tether_diameter!(se, se.d_tether) # adapt spring and damping constants to tether diameter
-    sys, pos, vel, defaults = model(se)
-    sol, elapsed_time = simulate(se, sys, defaults)
+    sys, pos, vel, defaults, guesses = model(se)
+    sol, elapsed_time = simulate(se, sys, defaults, guesses)
     play(se, sol, pos)
     println("Elapsed time: $(elapsed_time) s, speed: $(round(se.duration/elapsed_time)) times real-time")
     println("Number of evaluations per step: ", round(sol.stats.nf/(se.duration/0.1), digits=1))
