@@ -172,7 +172,7 @@ function calc_acc!(b::Buffer, se::Settings3, pos::AbstractMatrix{T}, vel::Abstra
 
     for (pulley_idx, pulley) in enumerate(pulleys)
         M = 3.1
-        @time pulley_force = b.spring_force[pulley.tethers[1]] - b.spring_force[pulley.tethers[2]]
+        pulley_force = b.spring_force[pulley.tethers[1]] - b.spring_force[pulley.tethers[2]]
         b.pulley_acc[pulley_idx] = pulley_force / M
     end
 
@@ -233,7 +233,6 @@ function calc_pos()
     POS0, VEL0, L0, V0 = calc_initial_state(points, tethers, pulleys)
     @parameters begin
         dynamic_pos[1:3, eachindex(d_idxs)] = POS0[:, d_idxs]
-        dynamic_acc[1:3, eachindex(d_idxs)] = VEL0[:, d_idxs]
         vel[1:3, eachindex(points)] = VEL0
         pulley_l0[eachindex(pulleys)] = L0
     end
@@ -241,16 +240,39 @@ function calc_pos()
         static_pos(t)[1:3, eachindex(s_idxs)] = POS0[:, s_idxs]
         static_acc(t)[1:3, eachindex(s_idxs)]
     end
+    pos = zeros(Num, 3, length(points))
+    for (j, i) in enumerate(d_idxs)
+        for k in 1:3
+            pos[k, i] = dynamic_pos[k, j]
+        end
+    end
+    for (j, i) in enumerate(s_idxs)
+        for k in 1:3
+            pos[k, i] = static_pos[k, j]
+        end
+    end
+    
     eqs = []
     for (j, i) in enumerate(s_idxs)
         eqs = [
             eqs
-            acc[:, j] ~ zeros(3)
-            acc[:, j] ~ calc_acc!(b, se, pos, vel, pulley_l0)[1][:, i] # WRONG POS HERE
+            static_acc[:, j] ~ zeros(3)
+            static_acc[:, j] ~ calc_acc!(b, se, pos, vel, pulley_l0)[1][:, i] # WRONG POS HERE
         ]
     end
+    eqs = reduce(vcat, Symbolics.scalarize.(eqs))
     @mtkbuild ns = NonlinearSystem(eqs)
-    prob = NonlinearProblem(ns)
+    u0 = [
+        static_pos => POS0[:, s_idxs]
+        static_acc => VEL0[:, s_idxs]
+    ]
+    ps = [
+        dynamic_pos => POS0[:, d_idxs]
+        vel => VEL0
+        pulley_l0 => L0
+    ]
+    prob = NonlinearProblem(ns, u0, ps)
+    @time sol = solve(prob, NewtonRaphson())
     @time sol = solve(prob, NewtonRaphson())
     @time sol = solve(prob, NewtonRaphson())
 end
