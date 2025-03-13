@@ -172,7 +172,7 @@ function calc_acc!(b::Buffer, se::Settings3, pos::AbstractMatrix{T}, vel::Abstra
 
     for (pulley_idx, pulley) in enumerate(pulleys)
         M = 3.1
-        pulley_force = b.spring_force[pulley.tethers[1]] - b.spring_force[pulley.tethers[2]]
+        @time pulley_force = b.spring_force[pulley.tethers[1]] - b.spring_force[pulley.tethers[2]]
         b.pulley_acc[pulley_idx] = pulley_force / M
     end
 
@@ -202,19 +202,16 @@ function calc_pos(b::Buffer, se::Settings3, idxs, pos_::AbstractMatrix{T}, vel_,
     pos = copy(pos_)
     vel = copy(vel_)
     function f(u, p)
-        @time pos[:, idxs] .= u
+        pos[:, idxs] .= u
         calc_acc!(b, se, pos, vel, pulley_l0)
         return b.acc[:, idxs]
     end
     u0 = pos[:, idxs]
     prob = NonlinearProblem(f, u0, nothing)
-    @time sol = solve(prob, NewtonRaphson(autodiff=AutoFiniteDiff(absstep=1e-8, relstep=1e-8)))
-    @time sol = solve(prob, NewtonRaphson(autodiff=AutoFiniteDiff(absstep=1e-8, relstep=1e-8)))
-    @time sol = solve(prob, NewtonRaphson(autodiff=AutoFiniteDiff(absstep=1e-8, relstep=1e-8)))
+    @time sol = solve(prob, NewtonRaphson(autodiff=AutoFiniteDiff(absstep=1e-8, relstep=1e-8)); abstol=1e-5, reltol=1e-5)
     pos[:, idxs] .= sol.u
     return pos
 end
-# @register_symbolic calc_pos(se::Settings3, idxs::AbstractVector{Int}, pos, vel, pulley_l0)
 @register_array_symbolic calc_pos(
         b::Buffer, 
         se::Settings3, 
@@ -225,6 +222,40 @@ end
     size = size(pos)
     eltype = Float64
 end
+
+function calc_pos()
+    b = Buffer{Num}()
+    se = Settings3()
+    s_idxs = [5]
+    d_idxs = setdiff(eachindex(points), s_idxs)
+    @show d_idxs
+
+    POS0, VEL0, L0, V0 = calc_initial_state(points, tethers, pulleys)
+    @parameters begin
+        dynamic_pos[1:3, eachindex(d_idxs)] = POS0[:, d_idxs]
+        dynamic_acc[1:3, eachindex(d_idxs)] = VEL0[:, d_idxs]
+        vel[1:3, eachindex(points)] = VEL0
+        pulley_l0[eachindex(pulleys)] = L0
+    end
+    @variables begin
+        static_pos(t)[1:3, eachindex(s_idxs)] = POS0[:, s_idxs]
+        static_acc(t)[1:3, eachindex(s_idxs)]
+    end
+    eqs = []
+    for (j, i) in enumerate(s_idxs)
+        eqs = [
+            eqs
+            acc[:, j] ~ zeros(3)
+            acc[:, j] ~ calc_acc!(b, se, pos, vel, pulley_l0)[1][:, i] # WRONG POS HERE
+        ]
+    end
+    @mtkbuild ns = NonlinearSystem(eqs)
+    prob = NonlinearProblem(ns)
+    @time sol = solve(prob, NewtonRaphson())
+    @time sol = solve(prob, NewtonRaphson())
+end
+calc_pos()
+@assert false
 
 function model(b::Buffer, se::Settings3)
     @parameters c_spring0=se.c_spring/(se.l0/se.segments) l_seg=se.l0/se.segments
@@ -251,7 +282,6 @@ function model(b::Buffer, se::Settings3)
         spring_force_vec(t)[1:3, eachindex(tethers)] # spring force from spring p1 to spring p2
     end
 
-    POS0, VEL0, L0, V0 = calc_initial_state(points, tethers, pulleys)
     defaults = Pair{Num, Real}[]
     eqs = [
         # vec(D(pos)) ~ vec(vel)
@@ -297,8 +327,6 @@ function model(b::Buffer, se::Settings3)
             println("wrong type")
         end
     end
-    @show calc_pos(b, se, quasi_idxs, POS0, VEL0, L0)
-    @assert false
     for i in quasi_idxs
         eqs = [
             eqs
