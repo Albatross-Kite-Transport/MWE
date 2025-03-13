@@ -35,11 +35,11 @@ points = [
    
     Point(:quasi_static, [1, 0, -1], zeros(3), 1.0, zeros(3)),
 
-    Point(:quasi_static, [0.5, 0, -2], zeros(3), 1.0, zeros(3)),
-    Point(:quasi_static, [1.5, 0, -2], zeros(3), 1.0, zeros(3)),
+    Point(:dynamic, [0.5, 0, -2], zeros(3), 1.0, zeros(3)),
+    Point(:dynamic, [1.5, 0, -2], zeros(3), 1.0, zeros(3)),
 
-    Point(:quasi_static, [1, 0, -3], zeros(3), 1.0, zeros(3)),
-    Point(:quasi_static, [2, 0, -3], zeros(3), 1.0, zeros(3)),
+    Point(:dynamic, [1, 0, -3], zeros(3), 1.0, zeros(3)),
+    Point(:dynamic, [2, 0, -3], zeros(3), 1.0, zeros(3)),
 
     Point(:dynamic,  [1, 0, -10], zeros(3), 1.0, [0., 0., -50]),
     Point(:dynamic, [2, 0, -10], zeros(3), 1.0, [0., 0., -50]),
@@ -53,7 +53,7 @@ tethers = [
     Tether((3, 7), norm(points[3].position - points[7].position), stiffness, damping),
     Tether((4, 9), norm(points[4].position - points[9].position) - 0.5, stiffness, damping),
     
-    Tether((5, 6), norm(points[5].position - points[6].position), stiffness, damping),
+    Tether((5, 6), norm(points[5].position - points[6].position) + 0.01, stiffness, damping),
     Tether((5, 7), norm(points[5].position - points[7].position), stiffness, damping),
     
     Tether((6, 8), norm(points[6].position - points[8].position), stiffness, damping),
@@ -99,8 +99,19 @@ l0 on pulley:
     damping = 473                                # unit damping constant            [Ns]
     segments::Int64 = 2                          # number of tether segments         [-]
     α0 = π/10                                    # initial tether angle            [rad]
-    duration = 5.0                                # duration of the simulation        [s]
+    duration = 0.2                                # duration of the simulation        [s]
     save::Bool = false                           # save png files in folder video
+end
+
+@with_kw struct Buffer{T}
+    spring_force::Vector{T} = zeros(T, length(tethers))
+    spring_force_vec::Matrix{T} = zeros(T, 3, length(tethers))
+    segment::Vector{T} = zeros(T, 3)
+    unit_vector::Vector{T} = zeros(T, 3)
+    rel_vel::Vector{T} = zeros(T, 3)
+    pulley_acc::Vector{T} = zeros(T, length(pulleys))
+    acc::Matrix{T} = zeros(T, 3, length(points))
+    force::Vector{T} = zeros(T, 3)
 end
 
 function set_tether_diameter!(se, d; c_spring_4mm = 614600, damping_4mm = 473)
@@ -125,12 +136,7 @@ function calc_initial_state(points, tethers, pulleys)
     POS0, VEL0, L0, V0
 end
 
-function calc_spring_forces(pos::AbstractMatrix{T}, pulley_l0) where T
-    spring_force = zeros(T, length(tethers))
-    spring_force_vec = zeros(T, 3, length(tethers))
-    segment = zeros(T, 3)
-    unit_vector = zeros(T, 3)
-    rel_vel = zeros(T, 3)
+function calc_spring_forces!(b::Buffer, pos::AbstractMatrix{T}, vel::AbstractMatrix{T}, pulley_l0) where T
     # loop over all tethers to calculate spring forces
     for (tether_idx, tether) in enumerate(tethers)
         found = false
@@ -150,61 +156,80 @@ function calc_spring_forces(pos::AbstractMatrix{T}, pulley_l0) where T
         end
         p1, p2 = tether.points[1], tether.points[2]
 
-        segment         .= pos[:, p2] .- pos[:, p1]
-        len              = norm(segment)
-        unit_vector     .= segment ./ len
-        rel_vel         .= vel[:, p1] .- vel[:, p2]
-        spring_vel       = rel_vel ⋅ unit_vector
-        spring_force[tether_idx]          = (tether.stiffness * tether.l0 * (len - l0) - tether.damping * tether.l0 * spring_vel)
-        spring_force_vec[:, tether_idx]  .= spring_force[tether_idx] .* unit_vector
+        b.segment         .= pos[:, p2] .- pos[:, p1]
+        len                = norm(b.segment)
+        b.unit_vector     .= b.segment ./ len
+        b.rel_vel         .= vel[:, p1] .- vel[:, p2]
+        spring_vel         = b.rel_vel ⋅ b.unit_vector
+        b.spring_force[tether_idx]          = (tether.stiffness * tether.l0 * (len - l0) - tether.damping * tether.l0 * spring_vel)
+        b.spring_force_vec[:, tether_idx]  .= b.spring_force[tether_idx] .* b.unit_vector
     end
-    return spring_force_vec, spring_force
+    return b.spring_force_vec, b.spring_force
 end
-@register_symbolic calc_spring_forces(pos, pulley_l0)
 
-function calc_acc(se::Settings3, pos::AbstractMatrix{T}, pulley_l0) where T
-    spring_force_vec, spring_force = calc_spring_forces(pos, pulley_l0)
+function calc_acc!(b::Buffer, se::Settings3, pos::AbstractMatrix{T}, vel::AbstractMatrix{T}, pulley_l0) where T
+    calc_spring_forces!(b, pos, vel, pulley_l0)
 
-    pulley_acc = zeros(T, length(pulleys))
     for (pulley_idx, pulley) in enumerate(pulleys)
         M = 3.1
-        pulley_force = spring_force[pulley.tethers[1]] - spring_force[pulley.tethers[2]]
-        pulley_acc[pulley_idx] = pulley_force / M
+        pulley_force = b.spring_force[pulley.tethers[1]] - b.spring_force[pulley.tethers[2]]
+        b.pulley_acc[pulley_idx] = pulley_force / M
     end
 
-    acc = zeros(T, 3, length(points))
-    force = zeros(T, 3)
     for (point_idx, point) in enumerate(points)
         if point.type === :fixed
-            acc[:, point_idx] .= 0.0
+            b.acc[:, point_idx] .= 0.0
         else
-            force .= 0.0
+            b.force .= 0.0
             for (j, tether) in enumerate(tethers)
                 if point_idx in tether.points
                     inverted = tether.points[2] == point_idx
                     if inverted
-                        force .-= spring_force_vec[:, j]
+                        b.force .-= b.spring_force_vec[:, j]
                     else
-                        force .+= spring_force_vec[:, j]
+                        b.force .+= b.spring_force_vec[:, j]
                     end
                 end
             end
-            force .+= point.force
-            acc[:, point_idx] .= force ./ point.mass .+ se.g_earth
+            b.force .+= point.force
+            b.acc[:, point_idx] .= b.force ./ point.mass .+ se.g_earth
         end
     end
-    return acc, pulley_acc
-end
-@register_symbolic calc_acc(se::Settings3, pos, pulley_l0)
-
-function calc_pos(se::Settings3, pos, pulley_l0)
-
+    return b.acc, b.pulley_acc
 end
 
-function model(se)
+function calc_pos(b::Buffer, se::Settings3, idxs, pos_::AbstractMatrix{T}, vel_, pulley_l0) where T
+    pos = copy(pos_)
+    vel = copy(vel_)
+    function f(u, p)
+        @time pos[:, idxs] .= u
+        calc_acc!(b, se, pos, vel, pulley_l0)
+        return b.acc[:, idxs]
+    end
+    u0 = pos[:, idxs]
+    prob = NonlinearProblem(f, u0, nothing)
+    @time sol = solve(prob, NewtonRaphson(autodiff=AutoFiniteDiff(absstep=1e-8, relstep=1e-8)))
+    @time sol = solve(prob, NewtonRaphson(autodiff=AutoFiniteDiff(absstep=1e-8, relstep=1e-8)))
+    @time sol = solve(prob, NewtonRaphson(autodiff=AutoFiniteDiff(absstep=1e-8, relstep=1e-8)))
+    pos[:, idxs] .= sol.u
+    return pos
+end
+# @register_symbolic calc_pos(se::Settings3, idxs::AbstractVector{Int}, pos, vel, pulley_l0)
+@register_array_symbolic calc_pos(
+        b::Buffer, 
+        se::Settings3, 
+        idxs::AbstractVector{Int}, 
+        pos::AbstractMatrix, 
+        vel::AbstractMatrix, 
+        pulley_l0::AbstractVector) begin
+    size = size(pos)
+    eltype = Float64
+end
+
+function model(b::Buffer, se::Settings3)
     @parameters c_spring0=se.c_spring/(se.l0/se.segments) l_seg=se.l0/se.segments
     @parameters rel_compression_stiffness = se.rel_compression_stiffness
-    @variables begin 
+    @variables begin
         pos(t)[1:3, eachindex(points)]
         vel(t)[1:3, eachindex(points)]
         acc(t)[1:3, eachindex(points)]
@@ -235,6 +260,7 @@ function model(se)
         D(pulley_vel) ~ pulley_acc - 10pulley_vel
     ]
 
+    quasi_idxs = Int[]
     for (point_idx, point) in enumerate(points)
         if point.type === :fixed
             eqs = [
@@ -249,7 +275,7 @@ function model(se)
             #     [pos[j, point_idx] => POS0[j, point_idx] for j in 1:3]
             #     [vel[j, point_idx] => 0 for j in 1:3]
             # ]
-        elseif point.type === :dynamic || point.type === :quasi_static
+        elseif point.type === :dynamic
             eqs = [
                 eqs
                 D(pos[:, point_idx]) ~ vel[:, point_idx]
@@ -260,9 +286,25 @@ function model(se)
                 [pos[j, point_idx] => POS0[j, point_idx] for j in 1:3]
                 [vel[j, point_idx] => 0 for j in 1:3]
             ]
+        elseif point.type === :quasi_static
+            push!(quasi_idxs, point_idx)
+            defaults = [
+                defaults
+                [pos[j, point_idx] => POS0[j, point_idx] for j in 1:3]
+                [vel[j, point_idx] => 0 for j in 1:3]
+            ]
         else
             println("wrong type")
         end
+    end
+    @show calc_pos(b, se, quasi_idxs, POS0, VEL0, L0)
+    @assert false
+    for i in quasi_idxs
+        eqs = [
+            eqs
+            pos[:, i] ~ calc_pos(b, se, quasi_idxs, pos, vel, pulley_l0)[:, i]
+            vel[:, i] ~ zeros(3)
+        ]
     end
 
     defaults = [
@@ -271,10 +313,11 @@ function model(se)
         pulley_vel => V0
     ]
 
+    b_num = Buffer{Num}()
     eqs = [
         eqs
-        vec(acc) ~ vec(calc_acc(se, pos, pulley_l0)[1])
-        vec(pulley_acc) ~ vec(calc_acc(se, pos, pulley_l0)[2])
+        vec(acc) ~ vec(calc_acc!(b_num, se, pos, vel, pulley_l0)[1])
+        vec(pulley_acc) ~ vec(calc_acc!(b_num, se, pos, vel, pulley_l0)[2])
     ]
     
     eqs = reduce(vcat, Symbolics.scalarize.(eqs))
@@ -289,8 +332,8 @@ function simulate(se, sys, defaults)
     tspan = (0.0, se.duration)
     ts    = 0:dt:se.duration
     @time prob = ODEProblem(sys, defaults, tspan; simplify=false)
-    elapsed_time = @elapsed sol = solve(prob, FBDF(autodiff=true); dt, abstol=tol, reltol=tol, saveat=ts)
-    elapsed_time = @elapsed sol = solve(prob, FBDF(autodiff=true); dt, abstol=tol, reltol=tol, saveat=ts)
+    elapsed_time = @elapsed sol = solve(prob, FBDF(autodiff=AutoFiniteDiff(absstep=1e-5, relstep=1e-5)); dt, abstol=tol, reltol=tol, saveat=ts)
+    elapsed_time = @elapsed sol = solve(prob, FBDF(autodiff=AutoFiniteDiff(absstep=1e-5, relstep=1e-5)); dt, abstol=tol, reltol=tol, saveat=ts)
     sol, elapsed_time
 end
 
@@ -323,8 +366,9 @@ end
 function main()
     global sol, pos, vel, len, c_spr
     se = Settings3()
+    b = Buffer{Float64}()
     set_tether_diameter!(se, se.d_tether) # adapt spring and damping constants to tether diameter
-    sys, pos, vel, defaults = model(se)
+    sys, pos, vel, defaults = model(b, se)
     sol, elapsed_time = simulate(se, sys, defaults)
     play(se, sol, pos)
     println("Elapsed time: $(elapsed_time) s, speed: $(round(se.duration/elapsed_time)) times real-time")
