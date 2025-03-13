@@ -35,13 +35,13 @@ points = [
     Point(:quasi_static, [1, 0, -1], zeros(3), 1.0, zeros(3)),
 
     Point(:quasi_static, [0.5, 0, -2], zeros(3), 1.0, zeros(3)),
-    Point(:dynamic, [1.5, 0, -2], zeros(3), 1.0, zeros(3)),
+    Point(:quasi_static, [1.5, 0, -2], zeros(3), 1.0, zeros(3)),
 
-    Point(:dynamic, [1, 0, -3], zeros(3), 1.0, zeros(3)),
-    Point(:dynamic, [2, 0, -3], zeros(3), 1.0, zeros(3)),
+    Point(:quasi_static, [1, 0, -3], zeros(3), 1.0, zeros(3)),
+    Point(:quasi_static, [2, 0, -3], zeros(3), 1.0, zeros(3)),
 
-    Point(:dynamic,  [1, 0, -10], zeros(3), 1.0, [0., 0., -50]),
-    Point(:dynamic, [2, 0, -10], zeros(3), 1.0, [0., 0., -50]),
+    Point(:dynamic,  [1, 0, -10], zeros(3), 100.0, [0., 0., -50]),
+    Point(:dynamic, [2, 0, -10], zeros(3), 10.0, [0., 0., -50]),
 ]
 
 stiffness = 614600
@@ -50,9 +50,9 @@ tethers = [
     Tether((1, 6), norm(points[1].position - points[6].position), stiffness, damping),
     Tether((2, 5), norm(points[2].position - points[5].position), stiffness, damping),
     Tether((3, 7), norm(points[3].position - points[7].position), stiffness, damping),
-    Tether((4, 9), norm(points[4].position - points[9].position) - 0.5, stiffness, damping),
+    Tether((4, 9), norm(points[4].position - points[9].position), stiffness, damping),
     
-    Tether((5, 6), norm(points[5].position - points[6].position) - 0.1, stiffness, damping),
+    Tether((5, 6), norm(points[5].position - points[6].position), stiffness, damping),
     Tether((5, 7), norm(points[5].position - points[7].position), stiffness, damping),
     
     Tether((6, 8), norm(points[6].position - points[8].position), stiffness, damping),
@@ -179,66 +179,6 @@ function calc_acc(se::Settings3, pos::AbstractMatrix{T}, vel, pulley_l0) where T
 end
 @register_symbolic calc_acc(se::Settings3, pos, vel, pulley_l0)
 
-function create_pos_prob(se::Settings3, s_idxs, d_idxs)
-    POS0, VEL0, L0, V0 = calc_initial_state(points, tethers, pulleys)
-
-    @parameters begin
-        dynamic_pos[1:3, eachindex(d_idxs)]
-        vel[1:3, eachindex(points)]
-        pulley_l0[eachindex(pulleys)]
-    end
-    @variables begin
-        static_pos(t)[1:3, eachindex(s_idxs)]
-        static_acc(t)[1:3, eachindex(s_idxs)]
-    end
-
-    pos = zeros(Num, 3, length(points))
-    for (j, i) in enumerate(d_idxs)
-        for k in 1:3
-            pos[k, i] = dynamic_pos[k, j]
-        end
-    end
-    for (j, i) in enumerate(s_idxs)
-        for k in 1:3
-            pos[k, i] = static_pos[k, j]
-        end
-    end
-    
-    eqs = []
-    for (j, i) in enumerate(s_idxs)
-        eqs = [
-            eqs
-            static_acc[:, j] ~ zeros(3)
-            static_acc[:, j] ~ calc_acc(se, pos, vel, pulley_l0)[1][:, i]
-        ]
-    end
-    eqs = reduce(vcat, Symbolics.scalarize.(eqs))
-    @mtkbuild ns = NonlinearSystem(eqs, [static_pos, static_acc], [dynamic_pos, vel, pulley_l0])
-    u0 = [
-        static_pos => POS0[:, s_idxs]
-    ]
-    ps = [
-        dynamic_pos => POS0[:, d_idxs]
-        vel => VEL0
-        pulley_l0 => L0
-    ]
-    prob = NonlinearProblem(ns, u0, ps; verbose=false)
-    getter = getu(prob, static_pos)
-    setter = setp(prob, [vel, pulley_l0])
-    return prob, getter, setter, s_idxs
-end
-
-function calc_pos(ps, vel, pulley_l0)
-    prob, getter, setter, s_idxs = ps
-    setter(prob, [vel, pulley_l0])
-    sol = solve(prob, NewtonRaphson(autodiff=AutoFiniteDiff(), verbose=false); abstol=1e-5, reltol=1e-5, verbose=false)
-    return getter(sol)
-end
-@register_array_symbolic calc_pos(ps::Tuple, vel::AbstractMatrix, pulley_l0::AbstractVector) begin
-    size = (3, length(ps[4]))
-    eltype = Float64
-end
-
 function model(se::Settings3)
     @parameters c_spring0=se.c_spring/(se.l0/se.segments) l_seg=se.l0/se.segments
     @parameters rel_compression_stiffness = se.rel_compression_stiffness
@@ -273,7 +213,6 @@ function model(se::Settings3)
         D(pulley_vel) ~ pulley_acc - 10pulley_vel
     ]
 
-    s_idxs = Int[]
     for (point_idx, point) in enumerate(points)
         if point.type === :fixed
             eqs = [
@@ -293,7 +232,11 @@ function model(se::Settings3)
                 [vel[j, point_idx] => 0 for j in 1:3]
             ]
         elseif point.type === :quasi_static
-            push!(s_idxs, point_idx)
+            eqs = [
+                eqs
+                acc[:, point_idx] ~ zeros(3)
+                vel[:, point_idx] ~ zeros(3)
+            ]
             guesses = [
                 guesses
                 [pos[j, point_idx] => POS0[j, point_idx] for j in 1:3]
@@ -302,17 +245,6 @@ function model(se::Settings3)
         else
             println("wrong type")
         end
-    end
-
-    d_idxs = setdiff(eachindex(points), s_idxs)
-    ps = create_pos_prob(se, s_idxs, d_idxs)
-    for (j, i) in enumerate(s_idxs)
-        eqs = [
-            eqs
-            acc[:, i] ~ zeros(3)
-            # pos[:, i] ~ calc_pos(ps, vel, pulley_l0)[:, j]
-            vel[:, i] ~ zeros(3)
-        ]
     end
 
     defaults = [
@@ -329,7 +261,6 @@ function model(se::Settings3)
     
     eqs = reduce(vcat, Symbolics.scalarize.(eqs))
     @named sys = ODESystem(eqs, t)
-    println("struct simplify")
     @time sys = structural_simplify(sys; simplify=false)
     sys, pos, vel, defaults, guesses
 end
@@ -340,8 +271,8 @@ function simulate(se, sys, defaults, guesses)
     tspan = (0.0, se.duration)
     ts    = 0:dt:se.duration
     @time prob = ODEProblem(sys, defaults, tspan; guesses, simplify=false)
-    elapsed_time = @elapsed sol = solve(prob, FBDF(autodiff=AutoFiniteDiff(absstep=1e-5, relstep=1e-5)); dt, abstol=tol, reltol=tol, saveat=ts)
-    elapsed_time = @elapsed sol = solve(prob, FBDF(autodiff=AutoFiniteDiff(absstep=1e-5, relstep=1e-5)); dt, abstol=tol, reltol=tol, saveat=ts)
+    elapsed_time = @elapsed sol = solve(prob, FBDF(autodiff=AutoFiniteDiff()); dt, abstol=tol, reltol=tol, saveat=ts)
+    elapsed_time = @elapsed sol = solve(prob, FBDF(autodiff=AutoFiniteDiff()); dt, abstol=tol, reltol=tol, saveat=ts)
     sol, elapsed_time
 end
 
