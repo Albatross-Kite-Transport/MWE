@@ -1,10 +1,9 @@
 # Tutorial example simulating a 3D mass-spring system with a nonlinear spring (1% stiffness
 # for l < l_0), n tether segments, tether drag and reel-in and reel-out. 
 using ModelingToolkit, OrdinaryDiffEq, LinearAlgebra, Timers, Parameters, ControlPlots
-using ModelingToolkit: t_nounits as t, D_nounits as D, setp, parameter_index
+using ModelingToolkit: t_nounits as t, D_nounits as D, setp, getu, parameter_index, SymbolicIndexingInterface
 using NonlinearSolve
 using ControlPlots
-
 
 struct Point
     type::Symbol
@@ -68,22 +67,6 @@ pulleys = [
     Pulley((5, 6), (tethers[5].l0 + tethers[6].l0))
     Pulley((8, 9), (tethers[8].l0 + tethers[9].l0))
 ]
-
-"""
-Acc on point is:
-if fixed:
-    0
-else:
-    F/m
-
-Force on point is:
-    - sum of minus spring forces on tether-connected points
-    - if tether-connected point is pulley: keep direction of pulley, but take minus spring force from the other point connected to the pulley
-
-l0 on pulley:
-    - stretched_length_1 / (stretched_length_1 + stretched_length_2) * sum_length
-"""
-
 
 @with_kw mutable struct Settings3 @deftype Float64
     g_earth::Vector{Float64} = [0.0, 0.0, -9.81] # gravitational acceleration     [m/s²]
@@ -191,38 +174,9 @@ function calc_acc(se::Settings3, pos::AbstractMatrix{T}, vel::AbstractMatrix{T},
     return acc, pulley_acc
 end
 
-# function calc_pos(b::Buffer, se::Settings3, idxs, pos_::AbstractMatrix{T}, vel_, pulley_l0) where T
-#     pos = copy(pos_)
-#     vel = copy(vel_)
-#     function f(u, p)
-#         pos[:, idxs] .= u
-#         calc_acc!(b, se, pos, vel, pulley_l0)
-#         return acc[:, idxs]
-#     end
-#     u0 = pos[:, idxs]
-#     prob = NonlinearProblem(f, u0, nothing)
-#     @time sol = solve(prob, NewtonRaphson(autodiff=AutoFiniteDiff(absstep=1e-8, relstep=1e-8)); abstol=1e-5, reltol=1e-5)
-#     pos[:, idxs] .= sol.u
-#     return pos
-# end
-# @register_array_symbolic calc_pos(
-#         b::Buffer, 
-#         se::Settings3, 
-#         idxs::AbstractVector{Int}, 
-#         pos::AbstractMatrix, 
-#         vel::AbstractMatrix, 
-#         pulley_l0::AbstractVector) begin
-#     size = size(pos)
-#     eltype = Float64
-# end
-
-function calc_pos()
-    se = Settings3()
-    s_idxs = [5, 6]
-    d_idxs = setdiff(eachindex(points), s_idxs)
-    @show d_idxs
-
+function create_pos_prob(se::Settings3, s_idxs, d_idxs)
     POS0, VEL0, L0, V0 = calc_initial_state(points, tethers, pulleys)
+
     @parameters begin
         dynamic_pos[1:3, eachindex(d_idxs)]
         vel[1:3, eachindex(points)]
@@ -232,6 +186,7 @@ function calc_pos()
         static_pos(t)[1:3, eachindex(s_idxs)]
         static_acc(t)[1:3, eachindex(s_idxs)]
     end
+
     pos = zeros(Num, 3, length(points))
     for (j, i) in enumerate(d_idxs)
         for k in 1:3
@@ -256,7 +211,6 @@ function calc_pos()
     @mtkbuild ns = NonlinearSystem(eqs, [static_pos, static_acc], [dynamic_pos, vel, pulley_l0])
     u0 = [
         static_pos => POS0[:, s_idxs]
-        # static_acc => VEL0[:, s_idxs]
     ]
     ps = [
         dynamic_pos => POS0[:, d_idxs]
@@ -264,23 +218,27 @@ function calc_pos()
         pulley_l0 => L0
     ]
     prob = NonlinearProblem(ns, u0, ps)
-    @time sol = solve(prob, NewtonRaphson(autodiff=AutoFiniteDiff()); abstol=1e-5, reltol=1e-5)
-    @time sol = solve(prob, NewtonRaphson(autodiff=AutoFiniteDiff()); abstol=1e-5, reltol=1e-5)
-    
-    set_dynamic_pos = setp(prob, dynamic_pos)
-    # set_dynamic_pos = setp(prob, dynamic_pos)
-    # @show vec(POS0[:, d_idxs])
-    @time set_dynamic_pos(prob, POS0[:, d_idxs])
-    @time set_dynamic_pos(prob, POS0[:, d_idxs])
-    @time sol = solve(prob, NewtonRaphson(autodiff=AutoFiniteDiff()); abstol=1e-5, reltol=1e-5)
-    @time sol = solve(prob, NewtonRaphson(autodiff=AutoFiniteDiff()); abstol=1e-5, reltol=1e-5)
-
-    return sol, static_pos
+    getter = getu(prob, static_pos)
+    setter = setp(prob, [dynamic_pos, vel, pulley_l0])
+    return prob, getter, setter
 end
-sol, pos = calc_pos()
-@assert false
 
-function model(b::Buffer, se::Settings3)
+function calc_pos(p, pos_, vel, pulley_l0)
+    pos = copy(pos)
+    prob, getter, setter, s_idxs, d_idxs = p
+    setter(prob, [pos[:, d_idxs], vel, pulley_l0])
+    sol = solve(prob, NewtonRaphson(autodiff=AutoFiniteDiff()); abstol=1e-5, reltol=1e-5, verbose=false)
+    pos[:, s_idxs] .= getter(sol)
+    return pos
+end
+
+@register_array_symbolic calc_pos(p::Tuple, 
+        pos::AbstractMatrix, vel::AbstractMatrix, pulley_l0::AbstractVector) begin
+    size = size(pos)
+    eltype = Float64
+end
+
+function model(se::Settings3)
     @parameters c_spring0=se.c_spring/(se.l0/se.segments) l_seg=se.l0/se.segments
     @parameters rel_compression_stiffness = se.rel_compression_stiffness
     @variables begin
@@ -305,6 +263,8 @@ function model(b::Buffer, se::Settings3)
         spring_force_vec(t)[1:3, eachindex(tethers)] # spring force from spring p1 to spring p2
     end
 
+    POS0, VEL0, L0, V0 = calc_initial_state(points, tethers, pulleys)
+
     defaults = Pair{Num, Real}[]
     eqs = [
         # vec(D(pos)) ~ vec(vel)
@@ -313,21 +273,14 @@ function model(b::Buffer, se::Settings3)
         D(pulley_vel) ~ pulley_acc - 10pulley_vel
     ]
 
-    quasi_idxs = Int[]
+    s_idxs = Int[]
     for (point_idx, point) in enumerate(points)
         if point.type === :fixed
             eqs = [
                 eqs
                 pos[:, point_idx] ~ point.position
                 vel[:, point_idx] ~ zeros(3)
-                # D(pos[:, point_idx]) ~ vel[:, point_idx]
-                # D(vel[:, point_idx]) ~ acc[:, point_idx]
             ]
-            # defaults = [
-            #     defaults
-            #     [pos[j, point_idx] => POS0[j, point_idx] for j in 1:3]
-            #     [vel[j, point_idx] => 0 for j in 1:3]
-            # ]
         elseif point.type === :dynamic
             eqs = [
                 eqs
@@ -340,7 +293,7 @@ function model(b::Buffer, se::Settings3)
                 [vel[j, point_idx] => 0 for j in 1:3]
             ]
         elseif point.type === :quasi_static
-            push!(quasi_idxs, point_idx)
+            push!(s_idxs, point_idx)
             defaults = [
                 defaults
                 [pos[j, point_idx] => POS0[j, point_idx] for j in 1:3]
@@ -350,10 +303,14 @@ function model(b::Buffer, se::Settings3)
             println("wrong type")
         end
     end
-    for i in quasi_idxs
+
+    d_idxs = setdiff(eachindex(points), s_idxs)
+    pos_prob, getter, setter = create_pos_prob(se, s_idxs, d_idxs)
+    for i in s_idxs
         eqs = [
             eqs
-            pos[:, i] ~ calc_pos(b, se, quasi_idxs, pos, vel, pulley_l0)[:, i]
+            # pos[:, i] ~ calc_pos((pos_prob, getter, setter, s_idxs, d_idxs), pos, vel, pulley_l0)[:, i]
+            pos[:, i] ~ zeros(3)
             vel[:, i] ~ zeros(3)
         ]
     end
@@ -364,11 +321,10 @@ function model(b::Buffer, se::Settings3)
         pulley_vel => V0
     ]
 
-    b_num = Buffer{Num}()
     eqs = [
         eqs
-        vec(acc) ~ vec(calc_acc!(b_num, se, pos, vel, pulley_l0)[1])
-        vec(pulley_acc) ~ vec(calc_acc!(b_num, se, pos, vel, pulley_l0)[2])
+        vec(acc) ~ vec(calc_acc(se, pos, vel, pulley_l0)[1])
+        vec(pulley_acc) ~ vec(calc_acc(se, pos, vel, pulley_l0)[2])
     ]
     
     eqs = reduce(vcat, Symbolics.scalarize.(eqs))
@@ -417,9 +373,8 @@ end
 function main()
     global sol, pos, vel, len, c_spr
     se = Settings3()
-    b = Buffer{Float64}()
     set_tether_diameter!(se, se.d_tether) # adapt spring and damping constants to tether diameter
-    sys, pos, vel, defaults = model(b, se)
+    sys, pos, vel, defaults = model(se)
     sol, elapsed_time = simulate(se, sys, defaults)
     play(se, sol, pos)
     println("Elapsed time: $(elapsed_time) s, speed: $(round(se.duration/elapsed_time)) times real-time")
