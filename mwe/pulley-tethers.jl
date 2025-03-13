@@ -35,7 +35,7 @@ points = [
    
     Point(:quasi_static, [1, 0, -1], zeros(3), 1.0, zeros(3)),
 
-    Point(:dynamic, [0.5, 0, -2], zeros(3), 1.0, zeros(3)),
+    Point(:quasi_static, [0.5, 0, -2], zeros(3), 1.0, zeros(3)),
     Point(:dynamic, [1.5, 0, -2], zeros(3), 1.0, zeros(3)),
 
     Point(:dynamic, [1, 0, -3], zeros(3), 1.0, zeros(3)),
@@ -53,7 +53,7 @@ tethers = [
     Tether((3, 7), norm(points[3].position - points[7].position), stiffness, damping),
     Tether((4, 9), norm(points[4].position - points[9].position) - 0.5, stiffness, damping),
     
-    Tether((5, 6), norm(points[5].position - points[6].position) + 0.01, stiffness, damping),
+    Tether((5, 6), norm(points[5].position - points[6].position) - 0.1, stiffness, damping),
     Tether((5, 7), norm(points[5].position - points[7].position), stiffness, damping),
     
     Tether((6, 8), norm(points[6].position - points[8].position), stiffness, damping),
@@ -198,46 +198,46 @@ function calc_acc!(b::Buffer, se::Settings3, pos::AbstractMatrix{T}, vel::Abstra
     return b.acc, b.pulley_acc
 end
 
-function calc_pos(b::Buffer, se::Settings3, idxs, pos_::AbstractMatrix{T}, vel_, pulley_l0) where T
-    pos = copy(pos_)
-    vel = copy(vel_)
-    function f(u, p)
-        pos[:, idxs] .= u
-        calc_acc!(b, se, pos, vel, pulley_l0)
-        return b.acc[:, idxs]
-    end
-    u0 = pos[:, idxs]
-    prob = NonlinearProblem(f, u0, nothing)
-    @time sol = solve(prob, NewtonRaphson(autodiff=AutoFiniteDiff(absstep=1e-8, relstep=1e-8)); abstol=1e-5, reltol=1e-5)
-    pos[:, idxs] .= sol.u
-    return pos
-end
-@register_array_symbolic calc_pos(
-        b::Buffer, 
-        se::Settings3, 
-        idxs::AbstractVector{Int}, 
-        pos::AbstractMatrix, 
-        vel::AbstractMatrix, 
-        pulley_l0::AbstractVector) begin
-    size = size(pos)
-    eltype = Float64
-end
+# function calc_pos(b::Buffer, se::Settings3, idxs, pos_::AbstractMatrix{T}, vel_, pulley_l0) where T
+#     pos = copy(pos_)
+#     vel = copy(vel_)
+#     function f(u, p)
+#         pos[:, idxs] .= u
+#         calc_acc!(b, se, pos, vel, pulley_l0)
+#         return b.acc[:, idxs]
+#     end
+#     u0 = pos[:, idxs]
+#     prob = NonlinearProblem(f, u0, nothing)
+#     @time sol = solve(prob, NewtonRaphson(autodiff=AutoFiniteDiff(absstep=1e-8, relstep=1e-8)); abstol=1e-5, reltol=1e-5)
+#     pos[:, idxs] .= sol.u
+#     return pos
+# end
+# @register_array_symbolic calc_pos(
+#         b::Buffer, 
+#         se::Settings3, 
+#         idxs::AbstractVector{Int}, 
+#         pos::AbstractMatrix, 
+#         vel::AbstractMatrix, 
+#         pulley_l0::AbstractVector) begin
+#     size = size(pos)
+#     eltype = Float64
+# end
 
 function calc_pos()
     b = Buffer{Num}()
     se = Settings3()
-    s_idxs = [5]
+    s_idxs = [5, 6]
     d_idxs = setdiff(eachindex(points), s_idxs)
     @show d_idxs
 
     POS0, VEL0, L0, V0 = calc_initial_state(points, tethers, pulleys)
     @parameters begin
-        dynamic_pos[1:3, eachindex(d_idxs)] = POS0[:, d_idxs]
-        vel[1:3, eachindex(points)] = VEL0
-        pulley_l0[eachindex(pulleys)] = L0
+        dynamic_pos[1:3, eachindex(d_idxs)]
+        vel[1:3, eachindex(points)]
+        pulley_l0[eachindex(pulleys)]
     end
     @variables begin
-        static_pos(t)[1:3, eachindex(s_idxs)] = POS0[:, s_idxs]
+        static_pos(t)[1:3, eachindex(s_idxs)]
         static_acc(t)[1:3, eachindex(s_idxs)]
     end
     pos = zeros(Num, 3, length(points))
@@ -272,11 +272,11 @@ function calc_pos()
         pulley_l0 => L0
     ]
     prob = NonlinearProblem(ns, u0, ps)
-    @time sol = solve(prob, NewtonRaphson())
-    @time sol = solve(prob, NewtonRaphson())
-    @time sol = solve(prob, NewtonRaphson())
+    @time sol = solve(prob, NewtonRaphson(); abstol=1e-5, reltol=1e-5)
+    @time sol = solve(prob, NewtonRaphson(); abstol=1e-5, reltol=1e-5)
+    return sol
 end
-calc_pos()
+sol = calc_pos()
 @assert false
 
 function model(b::Buffer, se::Settings3)
