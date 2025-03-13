@@ -108,10 +108,13 @@ function calc_initial_state(points, tethers, pulleys)
     POS0, VEL0, L0, V0
 end
 
-function calc_spring_forces(pos::AbstractMatrix{T}, vel::AbstractMatrix{T}, pulley_l0) where T
+function calc_spring_forces(pos::AbstractMatrix{T}, vel, pulley_l0) where T
     # loop over all tethers to calculate spring forces
     spring_force = zeros(T, length(tethers))
     spring_force_vec = zeros(T, 3, length(tethers))
+    segment = zeros(T, 3)
+    unit_vector = zeros(T, 3)
+    rel_vel = zeros(T, 3)
     for (tether_idx, tether) in enumerate(tethers)
         found = false
         for (pulley_idx, pulley) in enumerate(pulleys)
@@ -130,33 +133,34 @@ function calc_spring_forces(pos::AbstractMatrix{T}, vel::AbstractMatrix{T}, pull
         end
         p1, p2 = tether.points[1], tether.points[2]
 
-        segment            = pos[:, p2] .- pos[:, p1]
-        len                = norm(segment)
-        unit_vector        = segment ./ len
-        rel_vel            = vel[:, p1] .- vel[:, p2]
-        spring_vel         = rel_vel ⋅ unit_vector
+        segment         .= pos[:, p2] .- pos[:, p1]
+        len              = norm(segment)
+        unit_vector     .= segment ./ len
+        rel_vel         .= vel[:, p1] .- vel[:, p2]
+        spring_vel       = rel_vel ⋅ unit_vector
         spring_force[tether_idx]          = (tether.stiffness * tether.l0 * (len - l0) - tether.damping * tether.l0 * spring_vel)
         spring_force_vec[:, tether_idx]  .= spring_force[tether_idx] .* unit_vector
     end
     return spring_force_vec, spring_force
 end
 
-function calc_acc(se::Settings3, pos::AbstractMatrix{T}, vel::AbstractMatrix{T}, pulley_l0) where T
+function calc_acc(se::Settings3, pos::AbstractMatrix{T}, vel, pulley_l0) where T
     spring_force_vec, spring_force = calc_spring_forces(pos, vel, pulley_l0)
-    acc = zeros(T, 3, length(points))
+    
     pulley_acc = zeros(T, length(pulleys))
-
     for (pulley_idx, pulley) in enumerate(pulleys)
         M = 3.1
         pulley_force = spring_force[pulley.tethers[1]] - spring_force[pulley.tethers[2]]
         pulley_acc[pulley_idx] = pulley_force / M
     end
 
+    acc = zeros(T, 3, length(points))
+    force = zeros(T, 3)
     for (point_idx, point) in enumerate(points)
         if point.type === :fixed
             acc[:, point_idx] .= 0.0
         else
-            force = zeros(T, 3)
+            force .= 0.0
             for (j, tether) in enumerate(tethers)
                 if point_idx in tether.points
                     inverted = tether.points[2] == point_idx
@@ -173,6 +177,7 @@ function calc_acc(se::Settings3, pos::AbstractMatrix{T}, vel::AbstractMatrix{T},
     end
     return acc, pulley_acc
 end
+@register_symbolic calc_acc(se::Settings3, pos, vel, pulley_l0)
 
 function create_pos_prob(se::Settings3, s_idxs, d_idxs)
     POS0, VEL0, L0, V0 = calc_initial_state(points, tethers, pulleys)
@@ -321,10 +326,20 @@ function model(se::Settings3)
         pulley_vel => V0
     ]
 
+
+    for i in eachindex(points)
+        eqs = [
+            eqs
+            # acc[:, i] ~ calc_acc(se, pos, vel, pulley_l0)[1][:, i]
+            acc[:, i] ~ zeros(3)
+        ]
+    end
+    @show size(calc_acc(se, pos, vel, pulley_l0)[2])
     eqs = [
         eqs
-        vec(acc) ~ vec(calc_acc(se, pos, vel, pulley_l0)[1])
-        vec(pulley_acc) ~ vec(calc_acc(se, pos, vel, pulley_l0)[2])
+        pulley_acc ~ calc_acc(se, pos, vel, pulley_l0)[2]
+        # vec(acc) ~ vec(calc_acc(se, pos, vel, pulley_l0)[1])
+        # vec(pulley_acc) ~ vec(calc_acc(se, pos, vel, pulley_l0)[2])
     ]
     
     eqs = reduce(vcat, Symbolics.scalarize.(eqs))
