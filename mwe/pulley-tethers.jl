@@ -13,7 +13,7 @@ struct Point
     force::Vector{Float64}
 end
 
-struct Tether
+struct Segment
     points::Tuple{Int, Int}
     l0::Union{Float64, Nothing}
     stiffness::Float64
@@ -50,20 +50,20 @@ points = [
 stiffness = 614600
 damping = 4730
 segments = [
-    Tether((1, 6), norm(points[1].position - points[6].position), stiffness, damping),
-    Tether((2, 5), norm(points[2].position - points[5].position), stiffness, damping),
-    Tether((3, 7), norm(points[3].position - points[7].position), stiffness, damping),
-    Tether((4, 9), norm(points[4].position - points[9].position), stiffness, damping),
+    Segment((1, 6), norm(points[1].position - points[6].position), stiffness, damping),
+    Segment((2, 5), norm(points[2].position - points[5].position), stiffness, damping),
+    Segment((3, 7), norm(points[3].position - points[7].position), stiffness, damping),
+    Segment((4, 9), norm(points[4].position - points[9].position), stiffness, damping),
     
-    Tether((5, 6), norm(points[5].position - points[6].position), stiffness, damping),
-    Tether((5, 7), norm(points[5].position - points[7].position), stiffness, damping),
+    Segment((5, 6), norm(points[5].position - points[6].position), stiffness, damping),
+    Segment((5, 7), norm(points[5].position - points[7].position), stiffness, damping),
     
-    Tether((6, 8), norm(points[6].position - points[8].position), stiffness, damping),
-    Tether((7, 8), norm(points[7].position - points[8].position), stiffness, damping),
-    Tether((7, 9), norm(points[7].position - points[9].position), stiffness, damping),
+    Segment((6, 8), norm(points[6].position - points[8].position), stiffness, damping),
+    Segment((7, 8), norm(points[7].position - points[8].position), stiffness, damping),
+    Segment((7, 9), norm(points[7].position - points[9].position), stiffness, damping),
     
-    Tether((8, 10), norm(points[8].position - points[10].position), stiffness, damping),
-    Tether((9, 11), norm(points[9].position - points[11].position), stiffness, damping),
+    Segment((8, 10), norm(points[8].position - points[10].position), stiffness, damping),
+    Segment((9, 11), norm(points[9].position - points[11].position), stiffness, damping),
 ]
 
 pulleys = [
