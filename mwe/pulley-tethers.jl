@@ -21,10 +21,13 @@ struct Tether
 end
 
 struct Pulley
-    tethers::Tuple{Int, Int}
+    segments::Tuple{Int, Int}
     sum_length::Float64
 end
 
+"""
+Add or remove points, segments and pulleys to these lists to configure your system
+"""
 # protune-speed-system.jpg
 points = [
     Point(:fixed,  [0, 0, 2],  zeros(3), nothing, zeros(3)),  # Fixed point
@@ -46,7 +49,7 @@ points = [
 
 stiffness = 614600
 damping = 4730
-tethers = [
+segments = [
     Tether((1, 6), norm(points[1].position - points[6].position), stiffness, damping),
     Tether((2, 5), norm(points[2].position - points[5].position), stiffness, damping),
     Tether((3, 7), norm(points[3].position - points[7].position), stiffness, damping),
@@ -64,8 +67,8 @@ tethers = [
 ]
 
 pulleys = [
-    Pulley((5, 6), (tethers[5].l0 + tethers[6].l0))
-    Pulley((8, 9), (tethers[8].l0 + tethers[9].l0))
+    Pulley((5, 6), (segments[5].l0 + segments[6].l0))
+    Pulley((8, 9), (segments[8].l0 + segments[9].l0))
 ]
 
 @with_kw mutable struct Settings3 @deftype Float64
@@ -92,7 +95,7 @@ function set_tether_diameter!(se, d; c_spring_4mm = 614600, damping_4mm = 473)
     se.damping = damping_4mm * (d/4.0)^2
 end
                               
-function calc_initial_state(points, tethers, pulleys)
+function calc_initial_state(points, segments, pulleys)
     POS0 = zeros(3, length(points))
     VEL0 = zeros(3, length(points))
     L0 = zeros(length(pulleys))
@@ -102,27 +105,27 @@ function calc_initial_state(points, tethers, pulleys)
         VEL0[:, i] .= points[i].velocity
     end
     for i in eachindex(pulleys)
-        L0[i] = tethers[pulleys[i].tethers[1]].l0
+        L0[i] = segments[pulleys[i].segments[1]].l0
         V0[i] = 0.0
     end
     POS0, VEL0, L0, V0
 end
 
 function calc_spring_forces(pos::AbstractMatrix{T}, vel, pulley_l0) where T
-    # loop over all tethers to calculate spring forces
-    spring_force = zeros(T, length(tethers))
-    spring_force_vec = zeros(T, 3, length(tethers))
+    # loop over all segments to calculate spring forces
+    spring_force = zeros(T, length(segments))
+    spring_force_vec = zeros(T, 3, length(segments))
     segment = zeros(T, 3)
     unit_vector = zeros(T, 3)
     rel_vel = zeros(T, 3)
-    for (tether_idx, tether) in enumerate(tethers)
+    for (tether_idx, tether) in enumerate(segments)
         found = false
         for (pulley_idx, pulley) in enumerate(pulleys)
-            if tether_idx == pulley.tethers[1] # each tether should only be part of one pulley
+            if tether_idx == pulley.segments[1] # each tether should only be part of one pulley
                 l0 = pulley_l0[pulley_idx]
                 found = true
                 break
-            elseif tether_idx == pulley.tethers[2]
+            elseif tether_idx == pulley.segments[2]
                 l0 = pulley.sum_length - pulley_l0[pulley_idx]
                 found = true
                 break
@@ -150,7 +153,7 @@ function calc_acc(se::Settings3, pos::AbstractMatrix{T}, vel, pulley_l0) where T
     pulley_acc = zeros(T, length(pulleys))
     for (pulley_idx, pulley) in enumerate(pulleys)
         M = 3.1
-        pulley_force = spring_force[pulley.tethers[1]] - spring_force[pulley.tethers[2]]
+        pulley_force = spring_force[pulley.segments[1]] - spring_force[pulley.segments[2]]
         pulley_acc[pulley_idx] = pulley_force / M
     end
 
@@ -161,7 +164,7 @@ function calc_acc(se::Settings3, pos::AbstractMatrix{T}, vel, pulley_l0) where T
             acc[:, point_idx] .= 0.0
         else
             force .= 0.0
-            for (j, tether) in enumerate(tethers)
+            for (j, tether) in enumerate(segments)
                 if point_idx in tether.points
                     inverted = tether.points[2] == point_idx
                     if inverted
@@ -193,18 +196,18 @@ function model(se::Settings3)
         pulley_vel(t)[eachindex(pulleys)]
         pulley_acc(t)[eachindex(pulleys)]
 
-        segment(t)[1:3, eachindex(tethers)]
-        unit_vector(t)[1:3, eachindex(tethers)]
+        segment_vec(t)[1:3, eachindex(segments)]
+        unit_vector(t)[1:3, eachindex(segments)]
         l_spring(t), c_spring(t), damping(t), m_tether_particle(t)
-        len(t)[eachindex(tethers)]
-        l0(t)[eachindex(tethers)]
-        rel_vel(t)[1:3, eachindex(tethers)]
-        spring_vel(t)[eachindex(tethers)]
-        spring_force(t)[eachindex(tethers)]
-        spring_force_vec(t)[1:3, eachindex(tethers)] # spring force from spring p1 to spring p2
+        len(t)[eachindex(segments)]
+        l0(t)[eachindex(segments)]
+        rel_vel(t)[1:3, eachindex(segments)]
+        spring_vel(t)[eachindex(segments)]
+        spring_force(t)[eachindex(segments)]
+        spring_force_vec(t)[1:3, eachindex(segments)] # spring force from spring p1 to spring p2
     end
 
-    POS0, VEL0, L0, V0 = calc_initial_state(points, tethers, pulleys)
+    POS0, VEL0, L0, V0 = calc_initial_state(points, segments, pulleys)
 
     defaults = Pair{Num, Real}[]
     guesses = Pair{Num, Real}[]
@@ -287,7 +290,7 @@ function play(se, sol, pos)
     start = time_ns()
     i = 1; j = 0
     for i in eachindex(sol.t)
-        segs = [[tethers[k].points[1], tethers[k].points[2]] for k in eachindex(tethers)]
+        segs = [[segments[k].points[1], segments[k].points[2]] for k in eachindex(segments)]
         pos_ = [sol[pos][i][:, k] for k in eachindex(sol[pos][i][1, :])]
         plot2d(pos_, segs, sol.t[i]; xlim, ylim, xy)
         if se.save
