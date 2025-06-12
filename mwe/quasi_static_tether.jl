@@ -46,10 +46,7 @@ segments = [
     Segment((4, 5), norm(points[4].position - points[5].position), stiffness, damping),
 ]
 
-pulleys = [
-    # Pulley((5, 6), (segments[5].l0 + segments[6].l0))
-    # Pulley((8, 9), (segments[8].l0 + segments[9].l0))
-]
+pulleys = []
 
 @with_kw mutable struct Settings3 @deftype Float64
     g_earth::Vector{Float64} = [0.0, 0.0, -9.81] # gravitational acceleration     [m/s²]
@@ -244,6 +241,7 @@ function model(se::Settings3)
     
     eqs = reduce(vcat, Symbolics.scalarize.(eqs))
     @named sys = ODESystem(eqs, t)
+    
     @time sys = structural_simplify(sys; simplify=false)
     sys, pos, vel, defaults, guesses
 end
