@@ -1,0 +1,4 @@
+*.bin
+.helix
+*.vscode
+*.arrow
