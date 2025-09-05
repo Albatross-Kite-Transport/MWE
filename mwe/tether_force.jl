@@ -1,4 +1,6 @@
 using SymbolicAWEModels
+using OrdinaryDiffEqBDF
+using LinearAlgebra
 using OrdinaryDiffEqCore
 using ControlSystems
 using Plots
@@ -19,10 +21,8 @@ import ModelingToolkit: t_nounits as t
     heading(t)[1]
     elevation(t)[1]
     elevation_vel(t)[1]
-    elevation_acc(t)[1]
     azimuth(t)[1]
     azimuth_vel(t)[1]
-    azimuth_acc(t)[1]
     winch_force(t)[1:3]
     angle_of_attack(t)[1]
 end
@@ -36,8 +36,6 @@ outputs = [
     winch_force...,
     elevation_vel[1],
     azimuth_vel[1],
-    elevation_acc[1],
-    azimuth_acc[1],
 
     angle_of_attack[1],
 ]
@@ -50,7 +48,6 @@ nu = 3
     dt = 1/set.sample_freq
     sam = SymbolicAWEModel(set, "ram")
     plant_set = Settings("system.yaml")
-    plant_set.v_wind *= 0.9
     plant_sam = SymbolicAWEModel(plant_set, "ram")
     tether_set = Settings("system.yaml")
     tether_sam = SymbolicAWEModel(tether_set, "tether")
@@ -58,6 +55,7 @@ nu = 3
     simple_sam = SymbolicAWEModel(simple_set, "simple_ram")
 # end
 
+plant_set.v_wind = 16
 init!(sam; outputs)
 init!(plant_sam; outputs)
 init!(tether_sam)
@@ -68,7 +66,6 @@ find_steady_state!(plant_sam)
 copy_to_simple!(sam, tether_sam, simple_sam; prn=false)
 d_tether_len = [swinch.tether_len - winch.tether_len for (winch, swinch) in
                 zip(sam.sys_struct.winches, simple_sam.sys_struct.winches)]
-simple_sam.sys_struct.wings[1].drag_frac = 1.0
 find_steady_state!(simple_sam)
 
 struct SAMEstim{GetterType}
@@ -76,36 +73,51 @@ struct SAMEstim{GetterType}
     simple_sam::SymbolicAWEModel
     tether_sam::SymbolicAWEModel
     get_x::GetterType
+    ŷ::Vector{Float64}
     function SAMEstim(sam, simple_sam, tether_sam)
         get_x = ModelingToolkit.getu(simple_sam.integrator, simple_sam.control_funcs.dvs)
-        new{typeof(get_x)}(sam, simple_sam, tether_sam, get_x)
+        ŷ = simple_sam.simple_lin_model.get_y(simple_sam.integrator)
+        new{typeof(get_x)}(sam, simple_sam, tether_sam, get_x, ŷ)
     end
 end
 
 function preparestate!(estim::SAMEstim, y::Vector{<:Real})
-    @unpack sam, simple_sam, tether_sam, get_x = estim
+    @unpack sam, simple_sam, tether_sam, get_x, ŷ = estim
 
     # update sam with y
-    simple_sam.sys_struct.transforms[1].heading = y[1] - simple_sam.sys_struct.wings[1].heading
-    simple_sam.sys_struct.transforms[1].elevation = y[2]
-    simple_sam.sys_struct.transforms[1].azimuth = y[3]
+    @unpack winches, transforms, wings, points, groups = simple_sam.sys_struct
+    transforms[1].heading = y[1] - simple_sam.sys_struct.wings[1].heading
+    # TODO: singularity when elevation = 0.0
+    transforms[1].elevation = y[2]
+    transforms[1].azimuth = y[3]
     SymbolicAWEModels.reposition!(simple_sam.sys_struct.transforms, simple_sam.sys_struct)
-    OrdinaryDiffEqCore.reinit!(simple_sam.integrator; reinit_dae=true)
+    SymbolicAWEModels.reinit!(simple_sam, simple_sam.prob, FBDF(); lin_vsm=false)
 
-    ŷ = simple_sam.simple_lin_model.get_y(simple_sam.integrator)
+    @show y[1]
+    @show wings[1].heading
+
+    ŷ .= simple_sam.simple_lin_model.get_y(simple_sam.integrator)
     ŷ[4:6] .-= d_tether_len
 
-    simple_sam.set.v_wind += (y[7] - ŷ[7])
+    simple_sam.set.v_wind += (y[4] - ŷ[4]) + (y[7] - ŷ[7])
     @show simple_sam.set.v_wind
-    simple_sam.sys_struct.wings[1].drag_frac += (ŷ[13] - y[13])
+    # v = y[13:14] ⋅ [cos(y[1]), sin(y[1])]
+    # v̂ = ŷ[13:14] ⋅ [cos(ŷ[1]), sin(ŷ[1])]
+    # wings[1].drag_frac += 0.1(v̂ - v)
+    wings[1].drag_frac = 1.2
 
-    return get_x(simple_sam.integrator), ŷ
+    # TODO: change twist arm to adjust steering tether len
+    points[3].pos_b .-= 0.1(y[5] - ŷ[5]) * groups[1].chord
+    points[4].pos_b .-= 0.1(y[5] - ŷ[5]) * groups[2].chord
+
+    return get_x(simple_sam.integrator)
 end
 
 function updatestate!(estim::SAMEstim, u::Vector{<:Real}, y::Vector{<:Real})
-    @unpack simple_sam, sam = estim
-    next_step!(simple_sam; set_values=u)
-    next_step!(sam; set_values=u)
+    @unpack simple_sam, sam, ŷ = estim
+
+    next_step!(simple_sam; set_values=u, vsm_interval=3)
+    # next_step!(sam; set_values=u)
     nothing
 end
 
@@ -121,8 +133,12 @@ function man_sim!(N, ry, u)
     T_data = collect(1:N)*dt
     for i = 1:N
         @show i
+        if i > 100
+            plant_sam.set.v_wind = 14.0
+        end
         y = plant_sam.simple_lin_model.get_y(plant_sam.integrator)
-        @time x̂, ŷ = preparestate!(estim, y)
+        @time x̂ = preparestate!(estim, y)
+        ŷ = estim.ŷ
         u = 0.9*u + 0.1*SymbolicAWEModels.calc_steady_torque(simple_sam)
         U_data[:,i], Y_data[:,i], Ŷ_data[:,i], Ry_data[:,i] = u, y, ŷ, ry
         @time updatestate!(estim, u, y) # in the estim: step the complex model
@@ -137,7 +153,7 @@ x0 = estim.get_x(estim.simple_sam.integrator)
 @show y0
 ry = copy(y0)
 u0 = SymbolicAWEModels.calc_steady_torque(plant_sam)
-U_data, Y_data, Ŷ_data, Ry_data, T_data = man_sim!(100, ry, u0)
+U_data, Y_data, Ŷ_data, Ry_data, T_data = man_sim!(343, ry, u0)
 
 
 function plot_state(plot_idxs)
@@ -157,5 +173,5 @@ function plot_state(plot_idxs)
 
     display(p)
 end
-plot_idxs = [4, 5, 6, 7, 8, 9]
+plot_idxs = [1, 2, 4, 5, 6]
 plot_state(plot_idxs)
