@@ -2775,7 +2775,7 @@ version = "0.2.8"
 
 [[deps.SymbolicAWEModels]]
 deps = ["AtmosphericModels", "CodecZlib", "ControlSystemsBase", "DiffEqBase", "DocStringExtensions", "KiteUtils", "LaTeXStrings", "LinearAlgebra", "LinearSolve", "ModelingToolkit", "NonlinearSolve", "OrdinaryDiffEqBDF", "OrdinaryDiffEqCore", "OrdinaryDiffEqNonlinearSolve", "Parameters", "Pkg", "PrecompileTools", "Printf", "REPL", "RecipesBase", "Reexport", "Rotations", "SHA", "SciMLBase", "SciMLOperators", "Serialization", "StaticArrays", "Statistics", "StatsBase", "SteadyStateDiffEq", "Suppressor", "SymbolicIndexingInterface", "SymbolicUtils", "Tar", "Timers", "UnPack", "VortexStepMethod"]
-git-tree-sha1 = "20c94980c053cabf40dac933b75323b48a74f9a7"
+git-tree-sha1 = "e580951c58e8df3ad97d2037afdafdb473994960"
 repo-rev = "improve-simple-model"
 repo-url = "https://github.com/OpenSourceAWE/SymbolicAWEModels.jl.git"
 uuid = "9c9a347c-5289-41db-a9b9-25ccc76c3360"
@@ -3059,9 +3059,9 @@ version = "1.6.1"
 
 [[deps.XML2_jll]]
 deps = ["Artifacts", "JLLWrappers", "Libdl", "Libiconv_jll", "Zlib_jll"]
-git-tree-sha1 = "b8b243e47228b4a3877f1dd6aee0c5d56db7fcf4"
+git-tree-sha1 = "59071150afa35787c1656ba234cf03fdf8e2603f"
 uuid = "02c8fc9c-b97f-50b9-bbe4-9be30ff0a78a"
-version = "2.13.6+1"
+version = "2.13.8+0"
 
 [[deps.XZ_jll]]
 deps = ["Artifacts", "JLLWrappers", "Libdl"]

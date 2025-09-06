@@ -25,6 +25,7 @@ import ModelingToolkit: t_nounits as t
     azimuth_vel(t)[1]
     winch_force(t)[1:3]
     angle_of_attack(t)[1]
+    wind_scale_gnd(t)
 end
 
 outputs = [
@@ -37,11 +38,22 @@ outputs = [
     elevation_vel[1],
     azimuth_vel[1],
 
+    # unmeasured
     angle_of_attack[1],
+    wind_scale_gnd
 ]
 @info "Outputs: $outputs"
 ny = length(outputs)
 nu = 3
+
+"""
+  To use the kalman filter:
+  f
+      - state = measured y
+      - step
+  h
+      - return complete y
+"""
 
 # if !@isdefined simple_sam
     set = Settings("system.yaml")
@@ -93,22 +105,19 @@ function preparestate!(estim::SAMEstim, y::Vector{<:Real})
     SymbolicAWEModels.reposition!(simple_sam.sys_struct.transforms, simple_sam.sys_struct)
     SymbolicAWEModels.reinit!(simple_sam, simple_sam.prob, FBDF(); lin_vsm=false)
 
-    @show y[1]
-    @show wings[1].heading
-
     ŷ .= simple_sam.simple_lin_model.get_y(simple_sam.integrator)
     ŷ[4:6] .-= d_tether_len
 
-    simple_sam.set.v_wind += (y[4] - ŷ[4]) + (y[7] - ŷ[7])
+    simple_sam.set.v_wind += 10(y[4] - ŷ[4]) + 10(y[7] - ŷ[7])
     @show simple_sam.set.v_wind
     # v = y[13:14] ⋅ [cos(y[1]), sin(y[1])]
     # v̂ = ŷ[13:14] ⋅ [cos(ŷ[1]), sin(ŷ[1])]
-    # wings[1].drag_frac += 0.1(v̂ - v)
+    # wings[1].drag_frac -= 0.1(norm(y[13:14]) - norm(ŷ[13:14]))
     wings[1].drag_frac = 1.2
 
-    # TODO: change twist arm to adjust steering tether len
-    points[3].pos_b .-= 0.1(y[5] - ŷ[5]) * groups[1].chord
-    points[4].pos_b .-= 0.1(y[5] - ŷ[5]) * groups[2].chord
+    # TODO: find out why negative elevation is fucked
+    points[3].pos_b .-= (1.0(y[5] - ŷ[5]) + (y[8] - ŷ[8])) * groups[1].chord
+    points[4].pos_b .-= (1.0(y[6] - ŷ[6]) + (y[9] - ŷ[9])) * groups[2].chord
 
     return get_x(simple_sam.integrator)
 end
@@ -133,13 +142,12 @@ function man_sim!(N, ry, u)
     T_data = collect(1:N)*dt
     for i = 1:N
         @show i
-        if i > 100
-            plant_sam.set.v_wind = 14.0
-        end
+        plant_sam.set.v_wind = 15.51 + 2sin(2π * i*dt / 5)
         y = plant_sam.simple_lin_model.get_y(plant_sam.integrator)
         @time x̂ = preparestate!(estim, y)
         ŷ = estim.ŷ
-        u = 0.9*u + 0.1*SymbolicAWEModels.calc_steady_torque(simple_sam)
+        u = 0.9*u + 0.1 * SymbolicAWEModels.calc_steady_torque(simple_sam)
+        # TODO: use trajectorylimiter to directly set tether_acc for a set tether_len
         U_data[:,i], Y_data[:,i], Ŷ_data[:,i], Ry_data[:,i] = u, y, ŷ, ry
         @time updatestate!(estim, u, y) # in the estim: step the complex model
         updatestate!(plant_sam, u)  # update plant simulator
@@ -152,8 +160,9 @@ y0 = sam.simple_lin_model.get_y(sam.integrator)
 x0 = estim.get_x(estim.simple_sam.integrator)
 @show y0
 ry = copy(y0)
+ry[4:6] .-= 0.5
 u0 = SymbolicAWEModels.calc_steady_torque(plant_sam)
-U_data, Y_data, Ŷ_data, Ry_data, T_data = man_sim!(343, ry, u0)
+U_data, Y_data, Ŷ_data, Ry_data, T_data = man_sim!(200, ry, u0)
 
 
 function plot_state(plot_idxs)
@@ -163,7 +172,7 @@ function plot_state(plot_idxs)
     labels = [["$(vy[idx]) actual" "$(vy[idx]) estimated"] for idx in plot_idxs]
 
     # Plot all in one call with subplots layout, each subplot having the corresponding data and labels
-    p = plot(layout = (length(plot_idxs), 1))
+    p = plot(layout = (length(plot_idxs), 1), size=(900,600))
 
     for (i, idx) in enumerate(plot_idxs)
         plot!(p[i], T_data,
@@ -173,5 +182,5 @@ function plot_state(plot_idxs)
 
     display(p)
 end
-plot_idxs = [1, 2, 4, 5, 6]
+plot_idxs = [1, 4, 7, 10, 15, 16]
 plot_state(plot_idxs)

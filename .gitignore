@@ -2,3 +2,4 @@
 .helix
 *.vscode
 *.arrow
+*.toml
