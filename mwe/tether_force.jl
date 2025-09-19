@@ -44,6 +44,29 @@ outputs = [
     angle_of_attack[1],
     wind_scale_gnd
 ]
+
+vy = [
+    "heading [rad]",
+    "elevation [rad]",
+    "azimuth [rad]",
+    "main tether length [m]",
+    "left tether length [m]",
+    "right tether length [m]",
+    "main tether vel [m/s]",
+    "left tether vel [m/s]",
+    "right tether vel [m/s]",
+    "main tether acc [m/s^2]",
+    "left tether acc [m/s^2]",
+    "right tether acc [m/s^2]",
+    "elevation vel [rad/s]",
+    "azimuth vel [rad/s]",
+    "main winch force [N]",
+    "left winch force [N]",
+    "right winch force [N]",
+    "angle of attack [rad]",
+    "wind vel [m/s]",
+]
+
 @info "Outputs: $outputs"
 ny = length(outputs)
 nu = 3
@@ -73,6 +96,7 @@ init!(sam; outputs)
 init!(plant_sam; outputs)
 init!(tether_sam)
 init!(simple_sam; outputs, create_control_func=true)
+[group.damping = 100 for group in simple_sam.sys_struct.groups]
 
 find_steady_state!(sam)
 find_steady_state!(plant_sam)
@@ -87,15 +111,17 @@ struct SAMEstim{GetterType}
     tether_sam::SymbolicAWEModel
     get_x::GetterType
     ŷ::Vector{Float64}
+    integ::Vector{Float64}
     function SAMEstim(sam, simple_sam, tether_sam)
         get_x = ModelingToolkit.getu(simple_sam.integrator, simple_sam.control_funcs.dvs)
         ŷ = simple_sam.simple_lin_model.get_y(simple_sam.integrator)
-        new{typeof(get_x)}(sam, simple_sam, tether_sam, get_x, ŷ)
+        integ = zeros(2)
+        new{typeof(get_x)}(sam, simple_sam, tether_sam, get_x, ŷ, integ)
     end
 end
 
 function preparestate!(estim::SAMEstim, y::Vector{<:Real})
-    @unpack sam, simple_sam, tether_sam, get_x, ŷ = estim
+    @unpack sam, simple_sam, tether_sam, get_x, ŷ, integ = estim
 
     # update sam with y
     @unpack winches, transforms, wings, points, groups = simple_sam.sys_struct
@@ -115,30 +141,24 @@ function preparestate!(estim::SAMEstim, y::Vector{<:Real})
     winch_force = SymbolicAWEModels.calc_winch_force(simple_sam.sys_struct, y[7:9], y[10:12], u)
     # 2. adjust wind_vel based on calculated_winch_force / simple_model_winch_force
     force_fracs = winch_force ./ [norm(winch.force) for winch in winches]
-    @show force_fracs u
-    simple_sam.set.v_wind *= force_fracs[1]
+    simple_sam.set.v_wind = 0.5*simple_sam.set.v_wind + 0.5*simple_sam.set.v_wind * force_fracs[1]
     # 3. adjust wind_vel based on estimated tether len vs measured tether len
 
-    @show simple_sam.set.v_wind
     # v = y[13:14] ⋅ [cos(y[1]), sin(y[1])]
     # v̂ = ŷ[13:14] ⋅ [cos(ŷ[1]), sin(ŷ[1])]
     # wings[1].drag_frac -= 0.1(norm(y[13:14]) - norm(ŷ[13:14]))
     wings[1].drag_frac = 1.2
 
+    integ .+= 0.01 * (y[5:6] .- ŷ[5:6])
     # TODO: find out why negative elevation is fucked
-    points[3].pos_b .-= (1.0(y[5] - ŷ[5]) + (y[8] - ŷ[8])) * groups[1].chord
-    points[4].pos_b .-= (1.0(y[6] - ŷ[6]) + (y[9] - ŷ[9])) * groups[2].chord
-    # TODO: also make based on tether acc, then everything can become a NP
-    # with v_wind and r[1:2] as input, and tether_acc[1:3] as output
-    # winch_force[1] = 
 
     return get_x(simple_sam.integrator)
 end
 
 function updatestate!(estim::SAMEstim, u::Vector{<:Real}, y::Vector{<:Real})
-    @unpack simple_sam, sam, ŷ = estim
-
-    next_step!(simple_sam; set_values=u, vsm_interval=3)
+    @unpack simple_sam, sam, ŷ, integ = estim
+    set_values = u # .* [1, 1+integ[1], 1+integ[2]]
+    next_step!(simple_sam; set_values, vsm_interval=3)
     # next_step!(sam; set_values=u)
     nothing
 end
@@ -150,21 +170,24 @@ end
 
 estim = SAMEstim(sam, simple_sam, tether_sam)
 
-function man_sim!(N, ry, u)
+function man_sim!(N, ry, u; u_disturb = [1,1.2,1.2])
     U_data, Y_data, Ŷ_data, Ry_data = zeros(nu, N), zeros(ny, N), zeros(ny, N), zeros(ny, N)
     T_data = collect(1:N)*dt
     for i = 1:N
         @show i
         plant_sam.set.v_wind = 15.51 + 4sin(2π * i*dt / 5)
-        y = plant_sam.simple_lin_model.get_y(plant_sam.integrator)
-        @time x̂ = preparestate!(estim, y)
+        y = plant_sam.simple_lin_model.get_y(plant_sam.integrator) .* (1 .+ 0.01 .* rand(19))
+        x̂ = preparestate!(estim, y)
         ŷ = estim.ŷ
+        # TODO: fix u integrator
         u = 0.9*u + 0.1*SymbolicAWEModels.calc_steady_torque(simple_sam)
         # TODO: use trajectorylimiter to directly set tether_acc for a set tether_len
         # and calculate du
         U_data[:,i], Y_data[:,i], Ŷ_data[:,i], Ry_data[:,i] = u, y, ŷ, ry
-        @time updatestate!(estim, u, y) # in the estim: step the complex model
-        updatestate!(plant_sam, u)  # update plant simulator
+        updatestate!(estim, u, y) # in the estim: step the complex model
+        u_plant = u .* [1, 1+estim.integ[1], 1+estim.integ[2]] .* u_disturb
+        @show [1, 1+estim.integ[1], 1+estim.integ[2]] .* u_disturb
+        updatestate!(plant_sam, u_plant)  # update plant simulator
     end
     return U_data, Y_data, Ŷ_data, Ry_data, T_data
 end
@@ -176,25 +199,26 @@ x0 = estim.get_x(estim.simple_sam.integrator)
 ry = copy(y0)
 ry[4:6] .-= 0.5
 u0 = SymbolicAWEModels.calc_steady_torque(plant_sam)
-U_data, Y_data, Ŷ_data, Ry_data, T_data = man_sim!(200, ry, u0)
+U_data, Y_data, Ŷ_data, Ry_data, T_data = man_sim!(400, ry, u0)
 
 
 function plot_state(plot_idxs)
-    vy = string.(outputs)
-
+    # vy = string.(outputs)
     # Prepare the y-axis labels for each pair (actual and estimated) per index
-    labels = [["$(vy[idx]) actual" "$(vy[idx]) estimated"] for idx in plot_idxs]
-
+    labels = [["Actual $(vy[idx])" "Estimated $(vy[idx])"] for idx in plot_idxs]
     # Plot all in one call with subplots layout, each subplot having the corresponding data and labels
     p = plot(layout = (length(plot_idxs), 1), size=(900,600))
-
     for (i, idx) in enumerate(plot_idxs)
         plot!(p[i], T_data,
               [Y_data[idx, :], Ŷ_data[idx, :]],
               label = labels[i])
     end
-
+    xlabel!(p[end], "time [s]")  # add xlabel only once at bottom subplot
     display(p)
+    return p
 end
-plot_idxs = [1, 4, 7, 18, 19]
+plot_idxs = [4,5,6,8,9,19]
 plot_state(plot_idxs)
+# sl_plant, _ = sim_oscillate!(plant_sam)
+# sl_simple, _ = sim_oscillate!(simple_sam)
+# plot(sl_plant.syslog.time, [sl_plant.syslog.heading, sl_simple.syslog.heading]; label=["plant" "simple"])
