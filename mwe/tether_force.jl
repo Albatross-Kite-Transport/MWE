@@ -141,17 +141,19 @@ function preparestate!(estim::SAMEstim, y::Vector{<:Real})
     winch_force = SymbolicAWEModels.calc_winch_force(simple_sam.sys_struct, y[7:9], y[10:12], u)
     # 2. adjust wind_vel based on calculated_winch_force / simple_model_winch_force
     force_fracs = winch_force ./ [norm(winch.force) for winch in winches]
-    simple_sam.set.v_wind = 0.5*simple_sam.set.v_wind + 0.5*simple_sam.set.v_wind * force_fracs[1]
+    simple_sam.set.v_wind = 0.5*simple_sam.set.v_wind +
+        0.5*simple_sam.set.v_wind * force_fracs[1] +
+        10(y[4] - ŷ[4])
     # 3. adjust wind_vel based on estimated tether len vs measured tether len
+    points[3].pos_b .-= (1.0(y[5] - ŷ[5]) + (y[8] - ŷ[8])) * groups[1].chord
+    points[4].pos_b .-= (1.0(y[6] - ŷ[6]) + (y[9] - ŷ[9])) * groups[2].chord
+    @show simple_sam.integrator[simple_sam.prob.sys.r_group]
 
     # v = y[13:14] ⋅ [cos(y[1]), sin(y[1])]
     # v̂ = ŷ[13:14] ⋅ [cos(ŷ[1]), sin(ŷ[1])]
     # wings[1].drag_frac -= 0.1(norm(y[13:14]) - norm(ŷ[13:14]))
     wings[1].drag_frac = 1.2
-
-    integ .+= 0.01 * (y[5:6] .- ŷ[5:6])
     # TODO: find out why negative elevation is fucked
-
     return get_x(simple_sam.integrator)
 end
 
@@ -170,24 +172,25 @@ end
 
 estim = SAMEstim(sam, simple_sam, tether_sam)
 
-function man_sim!(N, ry, u; u_disturb = [1,1.2,1.2])
+function man_sim!(N, ry, u)
     U_data, Y_data, Ŷ_data, Ry_data = zeros(nu, N), zeros(ny, N), zeros(ny, N), zeros(ny, N)
     T_data = collect(1:N)*dt
     for i = 1:N
         @show i
-        plant_sam.set.v_wind = 15.51 + 4sin(2π * i*dt / 5)
-        y = plant_sam.simple_lin_model.get_y(plant_sam.integrator) .* (1 .+ 0.01 .* rand(19))
-        x̂ = preparestate!(estim, y)
+        # if i < N÷2
+            plant_sam.set.v_wind = 15.51 + sin(2π * i*dt / 5) # + 10i/N
+        # end
+        y = plant_sam.simple_lin_model.get_y(plant_sam.integrator) # .* (1 .+ 0.01 .* rand(19))
+        preparestate!(estim, y)
         ŷ = estim.ŷ
-        # TODO: fix u integrator
         u = 0.9*u + 0.1*SymbolicAWEModels.calc_steady_torque(simple_sam)
+        # tether_acc[winch.idx] ~ drum_radius / gear_ratio * α_motor[winch.idx]
+
         # TODO: use trajectorylimiter to directly set tether_acc for a set tether_len
         # and calculate du
         U_data[:,i], Y_data[:,i], Ŷ_data[:,i], Ry_data[:,i] = u, y, ŷ, ry
         updatestate!(estim, u, y) # in the estim: step the complex model
-        u_plant = u .* [1, 1+estim.integ[1], 1+estim.integ[2]] .* u_disturb
-        @show [1, 1+estim.integ[1], 1+estim.integ[2]] .* u_disturb
-        updatestate!(plant_sam, u_plant)  # update plant simulator
+        updatestate!(plant_sam, u)  # update plant simulator
     end
     return U_data, Y_data, Ŷ_data, Ry_data, T_data
 end
@@ -199,7 +202,7 @@ x0 = estim.get_x(estim.simple_sam.integrator)
 ry = copy(y0)
 ry[4:6] .-= 0.5
 u0 = SymbolicAWEModels.calc_steady_torque(plant_sam)
-U_data, Y_data, Ŷ_data, Ry_data, T_data = man_sim!(400, ry, u0)
+U_data, Y_data, Ŷ_data, Ry_data, T_data = man_sim!(200, ry, u0)
 
 
 function plot_state(plot_idxs)
@@ -219,6 +222,6 @@ function plot_state(plot_idxs)
 end
 plot_idxs = [4,5,6,8,9,19]
 plot_state(plot_idxs)
-# sl_plant, _ = sim_oscillate!(plant_sam)
-# sl_simple, _ = sim_oscillate!(simple_sam)
+# sl_plant, _ = sim_turn!(plant_sam)
+# sl_simple, _ = sim_turn!(simple_sam)
 # plot(sl_plant.syslog.time, [sl_plant.syslog.heading, sl_simple.syslog.heading]; label=["plant" "simple"])
