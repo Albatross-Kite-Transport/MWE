@@ -2,7 +2,7 @@
 
 julia_version = "1.11.7"
 manifest_format = "2.0"
-project_hash = "60dedd7c5bd1082b6a6240db1c1b2266ece2b490"
+project_hash = "119e24f5a3f7e9dc87408ea8218542a83f2d375a"
 
 [[deps.ADTypes]]
 git-tree-sha1 = "27cecae79e5cc9935255f90c53bb831cc3c870d7"
@@ -1228,9 +1228,9 @@ version = "0.11.0"
 
 [[deps.Krylov]]
 deps = ["LinearAlgebra", "Printf", "SparseArrays"]
-git-tree-sha1 = "b94257a1a8737099ca40bc7271a8b374033473ed"
+git-tree-sha1 = "d1fc961038207e43982851e57ee257adc37be5e8"
 uuid = "ba0b0d4f-ebba-5204-a429-3ac8c609bfb7"
-version = "0.10.1"
+version = "0.10.2"
 
 [[deps.LAME_jll]]
 deps = ["Artifacts", "JLLWrappers", "Libdl"]
@@ -1522,9 +1522,9 @@ version = "1.11.0"
 
 [[deps.MathOptInterface]]
 deps = ["BenchmarkTools", "CodecBzip2", "CodecZlib", "DataStructures", "ForwardDiff", "JSON3", "LinearAlgebra", "MutableArithmetics", "NaNMath", "OrderedCollections", "PrecompileTools", "Printf", "SparseArrays", "SpecialFunctions", "Test"]
-git-tree-sha1 = "9603279ae328cb943a5f36ecd40de2774b5646d3"
+git-tree-sha1 = "700acfa97a2b23569c0a6dcfcd85f183d7258e31"
 uuid = "b8f27783-ece8-5eb3-8dc8-9495eed66fee"
-version = "1.44.0"
+version = "1.45.0"
 
 [[deps.MatrixEquations]]
 deps = ["LinearAlgebra", "LinearMaps"]
@@ -2786,7 +2786,7 @@ version = "0.2.8"
 
 [[deps.SymbolicAWEModels]]
 deps = ["AtmosphericModels", "CodecZlib", "ControlSystemsBase", "DiffEqBase", "DocStringExtensions", "KiteUtils", "LaTeXStrings", "LinearAlgebra", "LinearSolve", "ModelingToolkit", "NonlinearSolve", "OrdinaryDiffEqBDF", "OrdinaryDiffEqCore", "OrdinaryDiffEqNonlinearSolve", "Parameters", "Pkg", "PrecompileTools", "Printf", "REPL", "RecipesBase", "Reexport", "Rotations", "SHA", "SciMLBase", "SciMLOperators", "Serialization", "StaticArrays", "Statistics", "StatsBase", "SteadyStateDiffEq", "Suppressor", "SymbolicIndexingInterface", "SymbolicUtils", "Tar", "Timers", "UnPack", "VortexStepMethod"]
-git-tree-sha1 = "ce809d5e5c16d8bb7c4bea716dd66f216c65078e"
+git-tree-sha1 = "70f2b31636170b550773b49ea833df8b0c61c3fd"
 repo-rev = "improve-simple-model"
 repo-url = "https://github.com/OpenSourceAWE/SymbolicAWEModels.jl.git"
 uuid = "9c9a347c-5289-41db-a9b9-25ccc76c3360"
